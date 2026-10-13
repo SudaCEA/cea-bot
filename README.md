@@ -136,7 +136,7 @@ openspec validate --all             # 规格与变更校验
 ```
 
 - 测试用 `asyncio.run(...)` 包裹协程场景，**不引入 `pytest-asyncio`**；
-- `pytest` 直跑与 `python -m pytest` 均为 54 passed（两种姿势都必须绿）；
+- `pytest` 直跑与 `python -m pytest` 均为 225 passed（数量随用例增长；两种姿势都必须绿）；
 - 未安装项目时 `tests/conftest.py` 会让 `pytest` 以非 0 退出并打印安装提示。
 
 ## 6. `assets/` 的来源与再生成
@@ -164,6 +164,70 @@ openspec validate --all             # 规格与变更校验
 - 该脚本只写 `assets/cea-avatar.png`；`assets/cea-2026.png` 是同一脚本把底部
   标识改成「2026」后的产物，重跑上面的命令**不会**覆盖它。
 
+## 7. 校内通知推送（`notice-digest`）
+
+定时检查校内通知栏目，把**新发布**的条目整理成「要点摘要 + PDF」推送到指定会话。
+该功能**默认关闭**：`notice_targets` 留空时完全不注册定时任务、不联网。
+
+### 启用三步
+
+1. 安装 PDF 渲染内核（Playwright 的浏览器二进制不入版本库，只装一次；约 300MB）：
+
+```bat
+.venv\Scripts\playwright install chromium
+```
+
+2. 在 `config.yaml` 里按需填写（既有键不动）：
+
+```yaml
+notice_targets: ["12345"]                    # 群号；也支持 "c2c:用户号" / "channel:子频道号"
+notice_type: 1                               # 1 校内通知 / 2 学校发文 / 3 学术报告
+notice_times: ["09:00", "15:00", "21:00"]    # 每日检查定点（本地时区）
+deepseek_api_key: "sk-..."                   # 摘要用；只写在 config.yaml（已被 .gitignore 排除）
+```
+
+3. 重启 bot：`.venv\Scripts\python -m cea_bot`。
+
+### 配置项一览
+
+| 键 | 缺省 | 说明 |
+|---|---|---|
+| `notice_targets` | `[]` | 推送目标；**留空 = 关闭该功能**。支持 `"<kind>:<id>"` 或裸 `"<id>"` |
+| `notice_target_kind` | `group` | 裸会话号按哪种会话推送（`group` / `c2c` / `channel`） |
+| `notice_type` | `1` | 栏目：1 校内通知、2 学校发文、3 学术报告 |
+| `notice_times` | `["09:00","15:00","21:00"]`（模板值） | 每日定点；**代码侧没有缺省**：启用后缺键或留空一律报错（留空 = 永不触发） |
+| `notice_db_path` | `data/state/cea_bot.db` | 增量状态库（SQLite，首次运行自动建库） |
+| `notice_pdf_dir` | `data/notices` | PDF 归档目录 |
+| `deepseek_api_key` | 无（必填） | 摘要服务密钥；启用该功能时缺失会在启动阶段快速失败 |
+| `deepseek_model` | `deepseek-flash` | 摘要模型名 |
+| `deepseek_base_url` | `https://api.deepseek.com` | OpenAI 兼容端点；可指向自建服务 |
+| `notice_max_chars` | `1500` | 正文/摘要长度上限，超出即截断并在消息中注明"已截断" |
+| `notice_dry_run` | `false` | 试运行：照常抓取/摘要/渲染 PDF，但**不发送任何消息**，只把将发送的文本与 PDF 路径写日志 |
+
+### 行为要点
+
+- **只抓列表首页**（20 条），且只对**未推送过**的条目抓详情；不翻页、不回溯历史。
+- **首次运行只建立基线**：把首页条目登记为已推送并记日志，**不推送历史**；从下一次定点起推增量。
+- **不重复推送**：增量状态存在 SQLite 里，进程重启、连续定点重叠都仍然有效（重叠的那次跳过并记日志）。
+- **解析到 0 条 = 页面改版**：报错中止本次并记日志，**不会**被当成"没有新通知"。
+- **摘要失败降级**：模型超时/报错时发送截断后的正文原文，并在消息里注明"摘要不可用"（绝不发空消息）。
+- **PDF 失败降级**：只发文本并在消息里注明；该条仍按已推送记账，不会无限重试。
+- **只把正文文本发给模型**：附件仅发送**名称**，不发送内容。
+- **QQ 官方前端不支持文件消息**：此时只发文本并在消息中说明（NapCat 前端支持文件）。
+- **重置状态**：删除 `data/state/cea_bot.db` 后重启，会按"首次运行"重新建立基线（不补推历史）。
+
+### 互斥与频率
+
+同一进程内两次检查不会并发执行（拿不到锁的那次直接跳过并记日志）。框架不内置限流原语，
+抓取频率完全由 `notice_times` 决定：每次运行只发出 1 个列表请求 + 每个新增条目 1 个详情请求。
+
+### 成本与合规
+
+- 摘要走 `deepseek-flash`：一条四五千字的通知约 4k 输入 + 0.5k 输出 token，按官方价格约
+  **0.006–0.012 元/条**（空闲/高峰时段有差价），每天几条时每月不到一元。
+- **合规提示**：校内通知**正文会发送到第三方云端 API**。若不可接受，把 `deepseek_base_url`
+  指向自建的 OpenAI 兼容端点即可（`deepseek_api_key` 填自建服务的密钥，不能留空或以 `YOUR_` 开头）。
+
 ## 目录结构
 
 ```
@@ -171,8 +235,12 @@ src/cea/               框架核心（平台无关：消息模型、inbound/outb
                        Router 装饰器、共享时钟、优雅退出）
 src/cea/adapters/      两个可互换的平台前端（qqbotpy / napcat）
 src/cea_bot/           业务应用（config.py / assembly.py / __main__.py）
-src/cea_bot/handlers/  业务 handler（basic.py 为用法范本）
-tests/                 单测（framework / napcat / layout）
+src/cea_bot/store.py   业务层持久化底座（SQLite 开库 / PRAGMA / 建表登记）
+src/cea_bot/handlers/  业务 handler（basic.py 为用法范本，notice.py 为校内通知推送）
+src/cea_bot/notices/   校内通知推送的领域实现（fetch / parse / schema / summarize / pdf）
+tests/                 单测（framework / napcat / layout / store / notice*）
+tests/fixtures/        通知页面的真实原始字节样本（离线解析测试用）
+data/                  运行数据（SQLite 状态库与 PDF 归档；已 gitignore，不入库）
 openspec/              规格与变更
 pyproject.toml         依赖与工具配置的唯一真相源
 start.bat              Windows 启动脚本（等价于 python -m cea_bot）

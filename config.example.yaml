@@ -20,3 +20,45 @@ secret: "YOUR_APP_SECRET"
 #   3. 消息格式 messagePostFormat 必须选 array
 # ws_url: "ws://127.0.0.1:3001"
 # token: ""
+
+# ---- 校内通知推送（notice-digest）----
+# 启用方式：notice_targets 填至少一个会话 ID 即启用；留空 = 关闭该功能（不注册定时任务、不联网）。
+# 说明与安装步骤见 README「校内通知推送」；行为规格见 openspec/changes/add-notice-digest/。
+
+# 推送目标会话 ID 列表（字符串：群号或私聊用户号）；留空 = 关闭该功能；改后重启生效
+notice_targets: []
+
+# 通知栏目（站点导航口径）：1 = 校内通知（缺省）| 2 = 学校发文 | 3 = 学术报告；取值只能是 1 / 2 / 3
+notice_type: 1
+
+# 每日检查定点（本地时区，24 小时制 "HH:MM"）：到点检查一次，推送全部尚未推送的条目；
+# 启用后不得留空 —— 留空等于该功能永远不会触发
+notice_times: ["09:00", "15:00", "21:00"]
+
+# 增量状态库路径（SQLite，首次运行自动建库）；相对路径以仓库根为准；该库记录"已推送"状态，
+# 删除它等于清空去重状态（会按首次运行重新建立基线，不补推历史）
+notice_db_path: "data/state/cea_bot.db"
+
+# PDF 产物目录（每条通知一份，命名 <日期>-<editId>.pdf）；相对路径以仓库根为准
+notice_pdf_dir: "data/notices"
+
+# DeepSeek 密钥（用于生成要点摘要）。含敏感信息：只写在 config.yaml（已被 .gitignore 排除），
+# 请勿提交、勿贴进日志或 issue。下面这行是占位值，原样保留（或以 YOUR_ 开头）视为未配置，
+# 功能启用时会启动即报错。
+deepseek_api_key: "YOUR_DEEPSEEK_API_KEY"
+
+# 摘要模型名；如需完全本地化，可改指向自建 OpenAI 兼容端点上的模型
+deepseek_model: "deepseek-flash"
+
+# 试运行：true = 照常抓取/摘要/渲染 PDF，但不向任何会话发送，只把将发送的文本与 PDF 路径写日志
+notice_dry_run: false
+
+# ---- 以下为可选键（注释形式；需要时取消注释即可覆盖缺省）----
+# 正文/摘要的长度上限（字符数，缺省 1500）：超出即截断，并在消息里注明"已截断"
+# notice_max_chars: 1500
+
+# 裸会话号（如 "12345"）按哪种会话推送：group（缺省）/ c2c / channel
+# notice_target_kind: "group"
+
+# 摘要服务的 OpenAI 兼容端点（缺省 https://api.deepseek.com）；可指向自建服务以避免正文外发
+# deepseek_base_url: "https://api.deepseek.com"

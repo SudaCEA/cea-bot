@@ -21,3 +21,7 @@ botpy.log
 
 # 本地运行时发行版（NapCat.Shell 等二进制，约 90MB，非源码）
 .local/
+
+# 运行数据：SQLite 增量状态库（data/state/）与 PDF 归档（data/notices/）。
+# 含"已推送"状态与抓取到的通知正文，随机器走、不入库。
+data/

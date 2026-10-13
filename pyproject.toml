@@ -22,6 +22,12 @@ dependencies = [
     # 不再依赖 qq-botpy 的传递依赖碰巧带进来。
     "aiohttp>=3.9",
     "PyYAML>=6.0",
+    # 本变更（add-notice-digest）唯一新增的运行时依赖：只用于把通知正文渲染为 PDF
+    # （Playwright 无头 Chromium 的 page.pdf()，见 D2）。抓取复用 aiohttp、解析与状态
+    # 用标准库，不再引入其他依赖。
+    # 注意：pip 装完还需单独下载浏览器二进制（约 300MB，落在 %LOCALAPPDATA%\ms-playwright，不入库）：
+    #   .venv\Scripts\playwright install chromium
+    "playwright>=1.49",
 ]
 
 [project.optional-dependencies]

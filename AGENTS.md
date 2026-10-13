@@ -68,8 +68,8 @@ CEA Bot —— 平台无关的 QQ 机器人框架 + 业务应用。
 改完代码必须全过，不要只跑单测（下面都是仓库根 + 仓库内 venv；激活 `.venv` 后去掉前缀即可）：
 
 ```
-.venv\Scripts\pytest                # 直跑 → 54 passed
-.venv\Scripts\python -m pytest      # 回归，两种姿势都要绿 → 54 passed
+.venv\Scripts\pytest                # 直跑 → 225 passed
+.venv\Scripts\python -m pytest      # 回归，两种姿势都要绿 → 225 passed
 .venv\Scripts\python -m mypy        # 零报错；[tool.mypy] 里 files = ["src"]，仓库根裸跑即全量
 openspec validate --all             # 规格与变更校验
 ```
@@ -96,9 +96,16 @@ openspec validate --all             # 规格与变更校验
 | `src/cea_bot/assembly.py` | `build_adapter`：按已校验配置装配前端（对两个前端延迟 import） |
 | `src/cea_bot/__main__.py` | 入口薄壳：读配置 → 装配 → 挂路由 → `app.run()`，即 `python -m cea_bot` |
 | `src/cea_bot/handlers/basic.py` | 业务 handler 示例（`echo` / `ping` / `noon_report`） |
+| `src/cea_bot/store.py` | 业务层持久化底座：SQLite 开库 / PRAGMA / 按 owner 建表登记与版本校验（**不得** import 上层） |
+| `src/cea_bot/notices/` | 校内通知推送的领域实现：`fetch`（抓取）/ `parse`（解析与编码回退）/ `schema`（增量状态）/ `summarize`（摘要）/ `pdf`（渲染） |
+| `src/cea_bot/handlers/notice.py` | 通知推送编排：定时注册、重叠跳过、干跑、推送与记账（`notice_targets` 为空时不挂载） |
 | `tests/test_framework.py` | 框架单测 |
 | `tests/test_napcat.py` | NapCat 前端单测 + 装配选择 |
 | `tests/test_layout.py` | 包布局断言（`CONFIG_PATH` 必须指向仓库根） |
+| `tests/test_store.py` | 持久化底座单测（PRAGMA / 建表 / 版本不兼容响亮失败） |
+| `tests/test_notice*.py` | 通知推送单测（配置 / 解析 / 抓取 / 状态 / 摘要 / PDF / 编排） |
+| `tests/fixtures/` | 通知页面真实原始字节样本（含"声明 gb2312 实为 UTF-8"的现场） |
+| `data/` | 运行数据：SQLite 增量状态库与 PDF 归档（已 gitignore，不入库） |
 | `start.bat` | Windows 启动脚本：自检 venv 与安装，再 `python -m cea_bot` |
 | `pyproject.toml` | 依赖、打包（src-layout）与 mypy 配置的唯一真相源 |
 | `README.md` | 安装 / 配置 / 启动 / 新增 handler / 测试 / `assets/` 来源 |
