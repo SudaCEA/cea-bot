@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-10-13
+# 仅改写主规格 runtime 的「## Purpose」概述段（文档性修正，需求层零 delta）。
+# OpenSpec 的 delta 制品只能表达 requirement 级的 ADDED/MODIFIED/REMOVED，
+# 承载不了概述改写；为过校验而硬造一条 requirement 属于"凭空造需求"，不取。
+skip_specs: true
