@@ -12,7 +12,8 @@ import pytest
 from cea.adapters.napcat import NapCatAdapter, build_segments, normalize_event
 from cea.bot import FileTooLargeError
 from cea.types import Chat, FileData, FileRef, OutMessage
-from main import build_adapter, check_config
+from cea_bot.assembly import build_adapter
+from cea_bot.config import check_config
 
 
 def _group_event(segments: list[dict], **overrides: object) -> dict:

@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-13
+# 纯结构重构：26 条需求的行为语义未改，不新增/修改任何规格需求。
+skip_specs: true

@@ -20,7 +20,7 @@
   - 风控提示：NapCat 使用真实 QQ 号收发，无平台频控，但高频发送可能触发腾讯风控；
     框架不内置限流（与既有约定一致），需要限速请业务层自行实现
 
-断线语义：框架以任务取消表达停止（见 cea/adapters/base.py 契约）——run() 被取消即
+断线语义：框架以任务取消表达停止（见 src/cea/adapters/base.py 契约）——run() 被取消即
 停止重连并收尾；未取消时按 reconnect_interval 固定间隔自动重连。
 """
 import asyncio

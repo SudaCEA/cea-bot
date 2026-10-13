@@ -1,0 +1,44 @@
+# CEA Bot 的项目元数据与工具配置（依赖、打包、类型检查的唯一真相源）。
+# 首次安装：.venv\Scripts\python -m pip install -e ".[dev]" --index-url https://pypi.org/simple
+
+[build-system]
+# src-layout 的可安装性（pip install -e ".[dev]"）由此确立：setuptools 需要它才能构建/生成 .pth。
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cea-bot"
+# setuptools 强制要求 [project] 含 version（缺则报 `project` must contain ['version']），
+# 故显式声明；本项目不发布 PyPI，版本号仅用于 editable install 的元数据。
+version = "0.1.0"
+# 与 .venv 内的解释器版本对齐（3.13.x）
+requires-python = ">=3.13"
+dependencies = [
+    # QQ 官方机器人 SDK。
+    # 注意：清华镜像暂缺此包，安装必须显式用官方源：
+    #   .venv\Scripts\python -m pip install -e ".[dev]" --index-url https://pypi.org/simple
+    "qq-botpy==1.2.1",
+    # 以下两个是直接 import（src/cea/adapters/napcat.py、src/cea_bot/config.py），
+    # 不再依赖 qq-botpy 的传递依赖碰巧带进来。
+    "aiohttp>=3.9",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# 开发/测试组：pytest + mypy + yaml 的类型 stub（stub 解决 mypy 的 import-untyped）
+dev = ["pytest>=8.0", "mypy>=2.0", "types-PyYAML"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.mypy]
+# 与 requires-python 对齐，避免换解释器后检查口径漂移。
+python_version = "3.13"
+files = ["src"]
+# 全局 ignore_missing_imports 有意保持关闭：第三方缺 stub 一律按模块精确放行（见下方
+# overrides），否则真实的类型问题会被一起藏掉。
+
+[[tool.mypy.overrides]]
+# qq-botpy 未携带 py.typed 或 stub，且非本项目可控，故整体放行。
+module = ["botpy", "botpy.*"]
+ignore_missing_imports = true

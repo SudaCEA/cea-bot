@@ -9,6 +9,8 @@ __pycache__/
 *.pyc
 .mypy_cache/
 .pytest_cache/
+# 打包元数据：pip install -e . 会在源码树生成 src/cea_bot.egg-info/
+*.egg-info/
 
 # 运行日志（botpy 文件日志默认落在 cwd）
 botpy.log

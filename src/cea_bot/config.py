@@ -1,26 +1,19 @@
 # -*- coding: utf-8 -*-
-"""CEA Bot 组装入口。
+"""配置读取与校验：定位仓库根的 config.yaml，按 adapter 分支校验。
 
-基于框架 cea/（平台无关核心）+ 平台前端适配器：
-  - cea/adapters/qqbotpy.py  QQ 官方开放平台（缺省）
-  - cea/adapters/napcat.py   NapCat / OneBot 11（正向 WS）
-
-config.yaml 顶层 `adapter` 选择前端：qqofficial（缺省）| napcat，
-各前端所需参数见 config.example.yaml。
-
-业务代码写在 handlers/ 下（用 @router.command / @router.on_message / @router.schedule
-装饰纯异步函数），本文件只负责组装，不写业务逻辑。
+`check_config` 是纯函数（已被测试直接依赖），`load_config` 只做文件 IO。
 """
-import asyncio
 import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from cea.adapters.base import Adapter
-
-ROOT = Path(__file__).resolve().parent
+# 仓库根 = src/cea_bot/config.py 的 parents[2]（[0]=cea_bot, [1]=src, [2]=仓库根）。
+# 不能照抄 `parent`：那会指向 src/cea_bot/，让 load_config 去找
+# src/cea_bot/config.yaml —— 该文件不存在，错误只在"配置缺失"文案里出现，
+# 属静默失败（由 tests/test_layout.py 逼住）。
+ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config.yaml"
 
 _QQ_SETTING_URL = "https://q.qq.com/qqbot/#/developer/developer-setting"
@@ -41,7 +34,7 @@ def check_config(cfg: dict[str, Any]) -> dict[str, Any]:
                 "[等待接入 apikey] adapter=qqofficial 需要机器人凭据：\n"
                 f"  1. 登录 QQ 机器人开放平台：{_QQ_SETTING_URL}\n"
                 "  2. 在「开发设置」页复制 AppID 与 AppSecret\n"
-                "  3. 填入 config.yaml 后重新运行：.venv\\Scripts\\python main.py"
+                "  3. 填入 config.yaml 后重新运行：.venv\\Scripts\\python -m cea_bot"
             )
         return {"adapter": adapter, "appid": appid, "secret": secret,
                 "group_whitelist": group_whitelist}
@@ -51,7 +44,7 @@ def check_config(cfg: dict[str, Any]) -> dict[str, Any]:
         if not ws_url:
             sys.exit(
                 "[配置缺失] adapter=napcat 需要填写 ws_url（NapCat 正向 WS 地址，"
-                "如 ws://127.0.0.1:3001）。NapCat 侧配置步骤见 cea/adapters/napcat.py 模块说明。"
+                "如 ws://127.0.0.1:3001）。NapCat 侧配置步骤见 src/cea/adapters/napcat.py 模块说明。"
             )
         return {"adapter": adapter, "ws_url": ws_url, "token": token,
                 "group_whitelist": group_whitelist}
@@ -64,31 +57,3 @@ def load_config() -> dict[str, Any]:
         sys.exit(f"[配置缺失] 未找到 {CONFIG_PATH}，请参考 config.example.yaml 创建。")
     cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
     return check_config(cfg)
-
-
-def build_adapter(cfg: dict[str, Any]) -> Adapter:
-    """按配置装配平台前端（QQ 官方 / NapCat 可互换，业务层无感）。"""
-    if cfg["adapter"] == "napcat":
-        from cea.adapters.napcat import NapCatAdapter
-
-        return NapCatAdapter(cfg["ws_url"], token=cfg["token"])
-    from cea.adapters.qqbotpy import QQBotpyAdapter
-
-    return QQBotpyAdapter(cfg["appid"], cfg["secret"])
-
-
-def main() -> None:
-    from cea import App
-    from handlers import basic
-
-    cfg = load_config()
-    app = App(adapter=build_adapter(cfg), group_whitelist=cfg["group_whitelist"])
-    app.include_router(basic.router)
-    asyncio.run(app.run())
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        pass  # 优雅退出已在 app.run() 内完成，吞掉中断避免 traceback 噪音
