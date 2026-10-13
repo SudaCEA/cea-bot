@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- CEA 字标 · 由 posters/tools/build_logo_svg.py 生成（variant=faithful），勿手改。
+     几何重建自 posters/assets/new-logo/logo_ref.png：字高 108，笔画 27（= 字高/4），
+     A 两腿与 E 斜切口同为 dx/dY = ±0.5。变体说明：E 顶横条竖切 · 中横条斜切 · 底横条与 A 左腿齐平 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 315.5 108" width="315.5" height="108"
+     fill="currentColor" role="img" aria-label="CEA · 苏州大学计算机爱好者协会">
+  <title>CEA · 苏州大学计算机爱好者协会</title>
+  <path d="M 87 0 L 54 0 A 54 54 0 0 0 54 108 L 87 108 L 87 81 L 54 81 A 27 27 0 0 1 54 27 L 87 27 Z"/>
+  <path d="M 96 0 L 201 0 L 201 27 L 123 27 L 123 40.5 L 189 40.5 L 175.5 67.5 L 123 67.5 L 123 81 L 194 81 L 234.5 0 L 261.5 0 L 315.5 108 L 285.31 108 L 248 33.37 L 210.69 108 L 96 108 Z"/>
+</svg>

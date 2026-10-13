@@ -1,0 +1,22 @@
+# CEA Bot 配置模板。使用：复制本文件为 config.yaml 并替换占位值。
+# 注意：config.yaml 含密钥，已被 .gitignore 排除，请勿提交。
+
+# 平台前端选择：qqofficial（QQ 机器人开放平台，缺省）| napcat（OneBot 11 / NapCat）
+adapter: "qqofficial"
+
+# 群聊白名单：仅响应列表内的群（群号字符串列表）；留空 = 不过滤；私聊不受限；改后重启生效
+group_whitelist: []
+
+# ---- adapter: qqofficial ----
+# 获取：https://q.qq.com/qqbot/#/developer/developer-setting → 「开发设置」页
+#       AppID 填入 appid；AppSecret 填入 secret。
+appid: "YOUR_APPID"
+secret: "YOUR_APP_SECRET"
+
+# ---- adapter: napcat ----
+# NapCat 侧前置配置（WebUI → 网络配置 → 新建 → WebSocket 服务端）：
+#   1. 监听 host / port（如 0.0.0.0:3001）
+#   2. 启用 token（公网部署必开），与下方 token 保持一致
+#   3. 消息格式 messagePostFormat 必须选 array
+# ws_url: "ws://127.0.0.1:3001"
+# token: ""

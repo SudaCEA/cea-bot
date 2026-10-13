@@ -1,0 +1,21 @@
+# 凭据（含 AppSecret，严禁提交）
+# 注意：必须锚定根目录（/config.yaml）。写裸名 config.yaml 会在任意深度匹配，
+# 会连带忽略 openspec/config.yaml（OpenSpec 的项目 context/rules）。
+/config.yaml
+
+# 虚拟环境与缓存
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+
+# 运行日志（botpy 文件日志默认落在 cwd）
+botpy.log
+*.log
+
+# 本地参考源码（官方 SDK 拷贝）
+.ref/
+
+# 本地运行时发行版（NapCat.Shell 等二进制，约 90MB，非源码）
+.local/
