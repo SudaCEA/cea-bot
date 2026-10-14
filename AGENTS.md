@@ -68,8 +68,8 @@ CEA Bot —— 平台无关的 QQ 机器人框架 + 业务应用。
 改完代码必须全过，不要只跑单测（下面都是仓库根 + 仓库内 venv；激活 `.venv` 后去掉前缀即可）：
 
 ```
-.venv\Scripts\pytest                # 直跑 → 225 passed
-.venv\Scripts\python -m pytest      # 回归，两种姿势都要绿 → 225 passed
+.venv\Scripts\pytest                # 直跑
+.venv\Scripts\python -m pytest      # 回归，两种姿势都要绿
 .venv\Scripts\python -m mypy        # 零报错；[tool.mypy] 里 files = ["src"]，仓库根裸跑即全量
 openspec validate --all             # 规格与变更校验
 ```
