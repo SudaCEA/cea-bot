@@ -163,10 +163,68 @@ def test_new_notice_pushes_text_and_pdf(tmp_path: Path):
     assert "要点：" in text_msg.text and "- 甲" in text_msg.text
     assert "附件1：苏州大学学生标兵推荐人选名单汇总表" in text_msg.text  # 附件清单只列名称
     assert file_msg.text == "" and file_msg.file is not None
-    assert file_msg.file_name.endswith(".pdf") and file_msg.file_name.startswith("2026-10-14-")
+    # 产物名 `YYMMDD-<标题>.pdf`（主规格「PDF 产物命名」）：标题取**列表行**的
+    # `row.title`（"关于新增测试通知的通知"），与详情页标题刻意不同，传错标题会立刻暴露。
+    assert file_msg.file_name == "261014-关于新增测试通知的通知.pdf"
     assert Path(file_msg.file).is_file()
     # 编排顺序：抓列表 → 抓详情 → 摘要 → 渲染
     assert [name for name, _ in calls] == ["fetch_list", "fetch_detail", "summarize", "render"]
+    assert calls[3][1] == "261014-关于新增测试通知的通知.pdf"  # 渲染器收到的 out_path 就带标题
+
+
+def test_pdf_out_path_uses_list_row_title(tmp_path: Path):
+    """tasks 1.2：调用点必须把 `row.title` 传进命名 —— 用假渲染器捕获 `out_path` 作证据。
+
+    同时钉住状态库里记下的 `pdf_path` 与盘上产物一致（库名 = 盘名，不留静默偏差）。
+    """
+    cfg = cfg_for(tmp_path)
+    app = App(adapter=None)
+    asyncio.run(handler.run_once(app.bot, cfg, deps=make_deps()[0]))  # 基线
+    _drain(app)
+
+    deps, calls = make_deps(list_raw=LIST_RAW + NEW_ROW.encode())
+    asyncio.run(handler.run_once(app.bot, cfg, deps=deps))
+
+    assert [payload for name, payload in calls if name == "render"] == [
+        "261014-关于新增测试通知的通知.pdf"
+    ]
+    row = [row for row in _rows(cfg["notice_db_path"]) if row[0] == NEW_ID][0]
+    assert row[2] == str(Path(cfg["notice_pdf_dir"]) / "261014-关于新增测试通知的通知.pdf")
+    assert Path(row[2]).is_file()
+
+
+def test_existing_pdf_target_is_overwritten_with_a_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    """design D4 / 规格 Scenario「同日同标题重名」：名字里没有 editId，撞名必然发生。
+
+    覆盖已存在文件**之前**必须记 WARNING（含 `edit_id` 与路径），不得静默覆盖 ——
+    否则归档目录里会悄悄少一份，而且没有任何痕迹。
+    """
+    cfg = cfg_for(tmp_path)
+    app = App(adapter=None)
+    asyncio.run(handler.run_once(app.bot, cfg, deps=make_deps()[0]))  # 基线
+    _drain(app)
+
+    # 预期路径写死成字面量：从被测实现反推名字，会让"标题传错"这类缺陷漏过去。
+    target = Path(cfg["notice_pdf_dir"]) / "261014-关于新增测试通知的通知.pdf"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"%PDF-1.4\n" + "先到的那一份".encode())
+
+    deps, _ = make_deps(list_raw=LIST_RAW + NEW_ROW.encode())
+    with caplog.at_level(logging.WARNING, logger="cea"):
+        result = asyncio.run(handler.run_once(app.bot, cfg, deps=deps))
+
+    assert result.pushed == (NEW_ID,)  # 撞名只留痕，不中断推送
+    hits = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno >= logging.WARNING and "已存在" in record.getMessage()
+    ]
+    assert len(hits) == 1, [record.getMessage() for record in caplog.records]
+    assert NEW_ID in hits[0] and str(target) in hits[0]  # 告警含 edit_id 与路径
+    # 告警对应的"覆盖"确实发生了：文件被本次渲染重写（不是只喊了一声）
+    assert target.read_bytes() == b"%PDF-1.4\n" + b"x" * 200
 
 
 def test_push_marks_row_and_survives_restart(tmp_path: Path):
@@ -262,7 +320,7 @@ def test_missing_dates_are_reported_loudly(tmp_path: Path, caplog: pytest.LogCap
     """列表页"部分改版"（日期列抽不到）必须留痕，而不是静默降级。
 
     回归独立审查抓到的缺陷：原先只有"0 条"才算结构异常，日期缺失会静默变成空串
-    （排序失效、PDF 文件名退化成"未知日期"）且没有任何告警。
+    （排序失效、PDF 文件名退化成 `000000-…`）且没有任何告警。
     """
     import re as _re
 

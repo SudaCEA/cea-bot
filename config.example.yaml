@@ -39,7 +39,8 @@ notice_times: ["09:00", "15:00", "21:00"]
 # 删除它等于清空去重状态（会按首次运行重新建立基线，不补推历史）
 notice_db_path: "data/state/cea_bot.db"
 
-# PDF 产物目录（每条通知一份，命名 <日期>-<editId>.pdf）；相对路径以仓库根为准
+# PDF 产物目录（每条通知一份，命名 YYMMDD-<通知标题>.pdf，如 261001-关于XX的通知.pdf；
+# 非法字符会被剔除、中文保留，详见 README 第 7 节）；相对路径以仓库根为准
 notice_pdf_dir: "data/notices"
 
 # DeepSeek 密钥（用于生成要点摘要）。含敏感信息：只写在 config.yaml（已被 .gitignore 排除），

@@ -34,8 +34,23 @@ A4_MARGIN: "PdfMargins" = {
     "right": "16mm",
 }
 
-# 文件名里只保留可移植字符：日期与标识正常都是 `YYYY-MM-DD` 与数字，其余一律剔掉。
-_UNSAFE = re.compile(r"[^0-9A-Za-z._-]+")
+# 文件名非法字符**黑名单**（design D2）：`< > : " / \ | ? *` 在 Windows 上非法、`/` 与 `\`
+# 还是路径分隔符，控制字符（`\x00-\x1f`）一并剔除。
+# 刻意**不用** ASCII 白名单：旧的 `[^0-9A-Za-z._-]+` 会把中文标题整段删空，
+# 那样"文件名带标题"就无从谈起。
+_UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+# 发布日期只认 `YYYY-MM-DD`（解析层的 `_DATE` 也只产出这一种形式）；非此形式一律用占位（D3）。
+_ISO_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+
+# 标题长度上限（design D3）：Windows MAX_PATH 为 260，扣掉绝对目录、`YYMMDD-`(7) 与 `.pdf`(4)
+# 仍有充足余量；校园通知标题通常远短于此。
+_TITLE_MAX = 80
+
+# 净化后标题为空、以及日期缺失/非 ISO 时的固定占位（design D3）。
+# 留空会生成 `261001-.pdf` / `-标题.pdf` 这类难辨认的名字，故一律用占位而非空串。
+_DATE_FALLBACK = "000000"
+_TITLE_FALLBACK = "未命名"
 
 Renderer = Callable[[str, Path], Awaitable[None]]
 
@@ -52,11 +67,36 @@ class PdfResult:
     bytes_len: int
 
 
-def pdf_file_name(published_on: str, edit_id: str) -> str:
-    """产物文件名规则：`<日期>-<editId>.pdf`；异常字符剔除，缺失时用中文占位。"""
-    date = _UNSAFE.sub("", published_on) or "未知日期"
-    identifier = _UNSAFE.sub("", edit_id) or "未知标识"
-    return f"{date}-{identifier}.pdf"
+def _date_stamp(published_on: str) -> str:
+    """把 ISO 发布日期压成 `YYMMDD`（design D1）；缺失或非 `YYYY-MM-DD` 形式时用 `000000`（D3）。
+
+    只校验**形式**，不校验日期是否真实存在（`2026-13-45` 形式合法即照转）：解析层只会产出
+    `_DATE` 命中的串，这里再叠一层日历校验只会多出一条无人依赖的失败分支。
+    """
+    match = _ISO_DATE.match(published_on.strip())
+    if match is None:
+        return _DATE_FALLBACK
+    return f"{match.group(1)[2:]}{match.group(2)}{match.group(3)}"
+
+
+def _title_part(title: str) -> str:
+    """标题净化：剔非法字符 → 截断到 80 字符 → 去掉**结尾**的点与空格（design D2 / D3）。
+
+    顺序是有意的：截断本身可能把结尾变成一个空格或点，先截断再收尾才不会漏。
+    结尾的点与空格会被 Windows 静默丢弃，那会让"库里记下的名字"与"磁盘上的名字"不一致 ——
+    本仓库最忌讳的静默失效，故在命名阶段就掐掉。
+    """
+    return _UNSAFE.sub("", title)[:_TITLE_MAX].rstrip(". ") or _TITLE_FALLBACK
+
+
+def pdf_file_name(published_on: str, title: str) -> str:
+    """产物文件名规则：`YYMMDD-<标题>.pdf`（design D1）。
+
+    中文标题完整保留；非法字符、结尾的点与空格被剔除；标题截断到 80 字符；净化后为空用
+    `未命名`；日期缺失或非 `YYYY-MM-DD` 用 `000000`。
+    **纯函数**：同输入必得同输出，不碰文件系统 —— 同名覆盖的告警在调用点做（design D4）。
+    """
+    return f"{_date_stamp(published_on)}-{_title_part(title)}.pdf"
 
 
 def with_base_href(html: str, site_root: str = SITE_ROOT) -> str:

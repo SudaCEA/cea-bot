@@ -259,7 +259,7 @@ async def _run_locked(
             missing_dates = sum(1 for brief in briefs if not brief.published_on)
             if missing_dates:
                 # 部分改版的静默风险：日期抽不到不会让解析抛错（内容仍在详情页），
-                # 但排序会失效、PDF 文件名退化成"未知日期"。这里必须留痕，否则"看起来正常"。
+                # 但排序会失效、PDF 文件名退化成 `000000-…`。这里必须留痕，否则"看起来正常"。
                 log.warning(
                     "列表页有 %d/%d 条缺少发布日期：页面可能部分改版（排序与 PDF 文件名会退化）",
                     missing_dates, len(briefs),
@@ -346,10 +346,22 @@ async def _push_one(
     if not outcome.usable:
         log.warning("通知 %s 的摘要降级为正文原文：%s", row.edit_id, outcome.reason)
 
-    pdf_path: Path | None = pdf_dir / pdf_file_name(row.published_on, row.edit_id)
+    # 产物名 `YYMMDD-<标题>.pdf`（相对主规格「PDF 产物命名」）。标题取**列表行**的
+    # `row.title`：它随状态库一起落库，不需要为命名多抓一次详情。
+    # `pdf_target` 是本条**打算**写入的路径，`pdf_path` 是"真的渲染成功、可用于归档与发送"的
+    # 路径（失败时置 None）—— 两者分开命名，省得让 `Path | None` 的类型收窄在调用点上打架。
+    pdf_target = pdf_dir / pdf_file_name(row.published_on, row.title)
+    if pdf_target.exists():
+        # design D4：名字里不再有 editId，同日同标题必然撞名。渲染会**覆盖**已有文件，
+        # 故覆盖前必须留痕（含 edit_id 与路径），不得静默覆盖 —— 否则归档里悄悄少一份。
+        log.warning(
+            "通知 %s 的 PDF 目标文件已存在，本次渲染将覆盖它（同日同标题撞名）：%s",
+            row.edit_id, pdf_target,
+        )
+    pdf_path: Path | None = pdf_target
     pdf_ok = False
     try:
-        await deps.render_pdf(detail_html, pdf_path)
+        await deps.render_pdf(detail_html, pdf_target)
         pdf_ok = True
     except (PdfRenderError, OSError) as exc:
         # 规格：PDF 生成失败 SHALL 降级为只发送文本并记录告警，且该条仍按"已推送"记账。
