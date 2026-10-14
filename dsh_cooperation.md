@@ -8,17 +8,18 @@
 
 | 角色 | 模型 | 职责 | 不得做 |
 |---|---|---|---|
-| **设计** | `xiaomi/mimo-v2.6-pro` | 探索、写 OpenSpec 提案（proposal / specs / design / tasks）、回答取舍问题、修改规格；**全程把握实施进度**；**对审查结果做二次检查** | 不写实现代码；不照单全收子 Agent 的自述结论 |
+| **设计** | `deepseek/deepseek-v4.1-flash` | 探索、写 OpenSpec 提案（proposal / specs / design / tasks）、回答取舍问题、修改规格；**全程把握实施进度**；**对审查结果做二次检查** | 不写实现代码；不照单全收子 Agent 的自述结论 |
 | **实施** | `deepseek/deepseek-v4.1-flash` | 按 change 的 tasks 逐条实现、写测试、勾选任务 | 不改设计/规格；不自我判定验收通过 |
 | **审查** | `deepseek/deepseek-v4.1-flash`（**独立智能体**） | 对实施结果做只读审查：规格一致性、未使用代码、静默失败、文档与实现一致 | 不改代码；不得与实施智能体共享上下文 |
 
-设计与实施/审查使用不同模型：设计需要长上下文与取舍判断，实施与审查是可并行的
-自包含子任务，用更快的模型即可。**但分工不等于放权**——设计智能体始终是质量的最终责任人。
+三类角色统一使用 `deepseek/deepseek-v4.1-flash`：**分工靠上下文隔离，不靠模型差异**。
+真正必须分开的是实施与审查的上下文——二者若是同一个智能体，"自己审自己"会系统性放过
+实现缺陷。**分工不等于放权**——设计智能体始终是质量的最终责任人。
 
 ## 工作流
 
 ```
-1. 设计智能体 (MiMoV2.6Pro)
+1. 设计智能体 (DeepSeek V4.1 Flash)
    └─ 探索 → 提出取舍 → 写 OpenSpec change（4 个制品）→ 停下，等确认
 
 2. 用户确认后，设计智能体创建 change（openspec new change）并写齐制品
@@ -49,7 +50,7 @@
 - **判断是否该停**。当子 Agent 开始出现连续的写入未生效、参数丢传、静默降级这类问题，
   说明上下文已经吃紧——此时应主动切断并留下干净检查点，而不是继续硬推。
 - **维护交接物**。每次派发的 prompt 必须自包含：change 路径、当前勾选状态、
-  上一轮遗留问题、验收命令（`pytest` / `openspec validate`）。
+  上一轮遗留问题、验收命令（`pytest` / `mypy` / `openspec validate`）。
 
 ## 设计智能体对审查结果的二次检查
 
@@ -74,23 +75,24 @@
 
 ## 子 Agent 工具的实际约束
 
-已验证：`subagent` 工具可用（派发探针返回结果），`subagent_fork` 亦已挂载。
-需要留意的限制：
+已验证：`subagent` / `subagent_fork` 两个工具均可用。需要留意的限制：
 
-- `subagent` / `subagent_fork` 的参数只有 `prompt`、`description`、`run_in_background`、`id`，
+- 两者的**入参只有三个**：`description`、`prompt`、`run_in_background`，
   **没有 `provider` / `model` 参数**——子 Agent 沿用其运行环境的模型，无法在调用点显式指定。
-- 只有 `workflow` 工具的 `agent(prompt, opts)` 支持 `opts.provider` / `opts.model` 覆盖。
-  因此若必须把实施/审查固定在 `deepseek/deepseek-v4.1-flash`，应当：
-  - 要么从该模型的会话里派发子 Agent，让其自然继承；
-  - 要么用 `workflow` 的 `agent(prompt, {model: "deepseek/deepseek-v4.1-flash"})` 派发。
+  （`id` 是**返回值**不是入参：派发后返回一个 subagent id，用 `send_message` 续接对话。）
+- `subagent_fork` 继承的是**会话内容**（本会话已完成的各轮），**不是模型**；它跑在当前会话
+  的模型上。所以不能靠 fork 换模型。
+- 因此统一用 `subagent` 派发即可：发起会话本身在 `deepseek/deepseek-v4.1-flash` 上，
+  子 Agent 自然继承该模型。`workflow` 的 `agent(prompt, opts)` 虽支持 `opts.provider` /
+  `opts.model` 覆盖，但仅在需要大规模扇出编排时使用，不作为钉模型的常规手段。
 - 子 Agent 是独立上下文：它看不到本会话的对话历史。设计智能体交接给实施智能体时，
-  必须把 change 的路径与 tasks.md 的当前勾选状态写进 prompt（`subagent_fork` 可继承历史，
-  但仅限于需要延续对话的场景）。
+  必须把 change 的路径与 tasks.md 的当前勾选状态写进 prompt（`subagent_fork` 仅在需要
+  延续对话的场景使用）。
 - 长任务用 `run_in_background: true`，并在最终答复前用 `job_output` 收齐所有仍在跑的任务。
 
 ## 归档
 
-审查通过并经设计智能体二次检查后，由**设计智能体**执行：先按 delta 同步主规格
-（新增 capability 建主规格，MODIFIED 要求整块替换），再 `mv` 到
-`openspec/changes/archive/YYYY-MM-DD-<name>/`。同步后必须逐条验证"无剩余可应用内容"，
-再 `openspec validate --specs --strict`。
+审查通过并经设计智能体二次检查后，由**设计智能体**执行：本变更 `skip_specs: true` 时无需
+同步主规格，直接 `mv` 到 `openspec/changes/archive/YYYY-MM-DD-<name>/`；有 delta spec 时
+先按 delta 同步主规格（新增 capability 建主规格，MODIFIED 要求整块替换），再 `mv`。
+同步后必须逐条验证"无剩余可应用内容"，再 `openspec validate --specs --strict`。
