@@ -200,6 +200,10 @@ def test_existing_pdf_target_is_overwritten_with_a_warning(
 
     覆盖已存在文件**之前**必须记 WARNING（含 `edit_id` 与路径），不得静默覆盖 ——
     否则归档目录里会悄悄少一份，而且没有任何痕迹。
+
+    告警文案刻意**只陈述事实**（"目标文件已存在"），不得断言原因：命中该分支不止"同日同标题"
+    一种情形（同一条通知重试也会命中），且告警在渲染**之前**发出，随后渲染失败时覆盖并未发生。
+    故这里额外断言文案里没有因果断言。
     """
     cfg = cfg_for(tmp_path)
     app = App(adapter=None)
@@ -223,6 +227,7 @@ def test_existing_pdf_target_is_overwritten_with_a_warning(
     ]
     assert len(hits) == 1, [record.getMessage() for record in caplog.records]
     assert NEW_ID in hits[0] and str(target) in hits[0]  # 告警含 edit_id 与路径
+    assert "撞名" not in hits[0]  # 只陈述事实，不断言原因（见 docstring）
     # 告警对应的"覆盖"确实发生了：文件被本次渲染重写（不是只喊了一声）
     assert target.read_bytes() == b"%PDF-1.4\n" + b"x" * 200
 

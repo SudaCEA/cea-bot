@@ -352,10 +352,13 @@ async def _push_one(
     # 路径（失败时置 None）—— 两者分开命名，省得让 `Path | None` 的类型收窄在调用点上打架。
     pdf_target = pdf_dir / pdf_file_name(row.published_on, row.title)
     if pdf_target.exists():
-        # design D4：名字里不再有 editId，同日同标题必然撞名。渲染会**覆盖**已有文件，
-        # 故覆盖前必须留痕（含 edit_id 与路径），不得静默覆盖 —— 否则归档里悄悄少一份。
+        # design D4：覆盖前必须留痕（含 edit_id 与路径），不得静默覆盖 —— 否则归档里悄悄少一份。
+        # 文案刻意**只陈述事实，不写因果断言**，因为"目标文件已存在"不止一个原因：①同日同标题的
+        # 两条通知必然同名（名字里没有 editId，见 D4）；②**同一条**通知重试也会命中（上一轮渲染
+        # 成功但记账失败、或进程中断）。何况告警在渲染**之前**发出，渲染随后失败时这次"覆盖"
+        # 根本没发生 —— 把因果写进日志就是在编事实。
         log.warning(
-            "通知 %s 的 PDF 目标文件已存在，本次渲染将覆盖它（同日同标题撞名）：%s",
+            "通知 %s 的 PDF 目标文件已存在，本次渲染将覆盖它：%s",
             row.edit_id, pdf_target,
         )
     pdf_path: Path | None = pdf_target

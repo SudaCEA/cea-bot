@@ -46,13 +46,31 @@ def test_pdf_file_name_keeps_chinese_title_intact():
 def test_pdf_file_name_strips_illegal_chars():
     """规格 Scenario「标题含非法字符」：`/` 等非法字符被**剔除**，而不是把整段标题删空。"""
     assert pdf_file_name("2026-10-01", "关于XX/YY的通知") == "261001-关于XXYY的通知.pdf"
-    # 黑名单全集：< > : " / \ | ? * 与控制字符
+    # 黑名单全集：< > : " / \ | ? * 与 C0 控制字符（DEL 与 C1 另有用例，见下）
     assert pdf_file_name("2026-10-01", 'a<b>c:d"e\\f|g?h*i\x07j') == "261001-abcdefghij.pdf"
 
 
+def test_pdf_file_name_strips_del_and_c1_control_chars():
+    """规格："控制字符 SHALL 被剔除" —— 而控制字符不止 C0（`\\x00-\\x1f`）。
+
+    DEL（`\\x7f`）与 C1（`\\x80-\\x9f`）同在 Unicode 控制字符之列；只剔 C0 时它们会**残留**到
+    文件名里（Windows 允许），归档名于是混进不可见垃圾字符 —— `261001-a\\x85b.pdf` 看着像
+    `261001-ab.pdf`，实际复制、检索、比对全都对不上。三例都必须被剔除。
+    """
+    assert pdf_file_name("2026-10-01", "a\x7fb") == "261001-ab.pdf"
+    assert pdf_file_name("2026-10-01", "a\x85b") == "261001-ab.pdf"
+    assert pdf_file_name("2026-10-01", "a\x9fb") == "261001-ab.pdf"
+
+
 def test_pdf_file_name_cannot_escape_directory():
-    """路径分隔符被剔除 → 产物名仍是**单个**文件名，不会写到上级目录去。"""
+    """路径分隔符被剔除 → 产物名仍是**单个**文件名，不会写到上级目录去。
+
+    第一条是**字面量**断言，刻意加的：只断言"没有分隔符"与 `Path(name).name == name` 时，
+    一个把 `.` 也当非法字符剔掉的实现（产出 `261001-etcpasswd.pdf`）照样通过 —— 那是**静默改名**，
+    不是"拒绝穿越"。字面量把"只剔分隔符、其余原样保留"这条口径钉死。
+    """
     name = pdf_file_name("2026-10-01", "../../etc/passwd")
+    assert name == "261001-....etcpasswd.pdf"
     assert "/" not in name and "\\" not in name
     assert Path(name).name == name
 
@@ -70,6 +88,20 @@ def test_pdf_file_name_missing_or_non_iso_date():
         assert pdf_file_name(published_on, "通知标题") == "000000-通知标题.pdf"
 
 
+def test_pdf_file_name_rejects_non_ascii_digits_in_date():
+    """日期戳只认 **ASCII** 数字：Unicode Nd 是 ASCII 的同形异义字，必须落 `000000-`。
+
+    全角 `２０２６-１０-０１`、阿拉伯-印度 `٢٠٢٦-١٠-٠١`、天城文 `२०२६-१०-०१` 都属于 Unicode Nd，
+    用 `\\d` 写正则时会被当成合法日期，产出 `２６１００１-通知标题.pdf` —— 名字看着像日期，
+    排序与检索却全部错位（同形异义字），比落 `000000` 更糟。它们本就不是规格要求的
+    `YYYY-MM-DD` 形式（`YYMMDD` 是给排序/检索用的 ASCII 戳），故一律回落到占位。
+    """
+    for published_on in ("２０２６-１０-０１", "٢٠٢٦-١٠-٠١", "२०२६-१०-०१"):
+        assert pdf_file_name(published_on, "通知标题") == "000000-通知标题.pdf"
+    # 混排（ASCII 数字 + Unicode 数字）同样不是合法形式，不得只"半认"
+    assert pdf_file_name("２０２6-10-01", "通知标题") == "000000-通知标题.pdf"
+
+
 def test_pdf_file_name_title_falls_back_when_empty():
     """标题为空、或净化后为空 → 固定占位 `未命名`（而不是难辨认的 `261001-.pdf`）。"""
     for title in ("", "///", "   ", "...", "\x00\x01"):
@@ -77,7 +109,12 @@ def test_pdf_file_name_title_falls_back_when_empty():
 
 
 def test_pdf_file_name_strips_trailing_dots_and_spaces():
-    """标题**结尾**的点与空格被剔除：Windows 会静默丢弃它们，导致库里的名字与盘上的不一致。"""
+    """标题**结尾**的点与空格被剔除：理由是**名字整洁**，避免 `261014-通知标题. .pdf` 这类难辨认的名字。
+
+    理由**不是**"防 Windows 静默裁名"：Windows 只裁**路径组件末端**的点与空格，而本命名恒以
+    `.pdf` 结尾，故"库里名字与盘上名字不一致"在这套命名下不可能发生（实测盘上 `尾点.pdf.` 会被
+    裁成 `尾点.pdf`，但 `扩展名前. .pdf` 原样保留）。规则本身无害且让名字更整洁，故保留。
+    """
     assert pdf_file_name("2026-10-01", "通知标题. ") == "261001-通知标题.pdf"
     assert pdf_file_name("2026-10-01", "通知标题..  ") == "261001-通知标题.pdf"
     # 中间的点与空格是合法字符，必须保留
