@@ -303,3 +303,26 @@ def test_deepseek_base_url_invalid_fails_fast(bad_url):
     with pytest.raises(SystemExit) as exc:
         check_config(_enabled(deepseek_base_url=bad_url))
     assert "deepseek_base_url" in str(exc.value)
+
+
+# ---- ⑤d 单次投递上限 notice_max_per_run（0 = 不限制；与 notice_max_chars 语义相反）----
+
+
+def test_max_per_run_default_is_unlimited():
+    assert check_config(_enabled())["notice_max_per_run"] == 0
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"), [(0, 0), (1, 1), (3, 3), ("5", 5), (" 0 ", 0), ("", 0), (None, 0)],
+    ids=["int0", "int1", "int3", "str5", "padded0", "blank", "none"],
+)
+def test_max_per_run_accepts_nonnegative(raw, expected):
+    """0 与空值是"不限制"，正整数生效。**这里的 0 合法**（与 notice_max_chars 相反）。"""
+    assert check_config(_enabled(notice_max_per_run=raw))["notice_max_per_run"] == expected
+
+
+@pytest.mark.parametrize("bad", [-1, "-2", "x", 1.5, True], ids=["neg", "neg-str", "text", "float", "bool"])
+def test_max_per_run_invalid_fails_fast(bad):
+    with pytest.raises(SystemExit) as exc:
+        check_config(_enabled(notice_max_per_run=bad))
+    assert "notice_max_per_run" in str(exc.value)

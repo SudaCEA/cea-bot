@@ -62,12 +62,22 @@ class NoticeDeps:
 
 @dataclass(frozen=True)
 class RunResult:
-    """一次运行的结果：供日志与测试断言（不参与业务决策）。"""
+    """一次运行的结果：供日志与测试断言（不参与业务决策）。
+
+    `remaining` 的口径是 `remaining == len(plan.pending) - len(pushed)`：本轮**未成功投递**的
+    计划内条目数，**含**本轮处理失败的条目（失败的条目仍是 `pushed_at IS NULL`，下轮定点会重试）。
+    因此它与失败日志里那句"剩余待投递"是**同一个数**，不是两个口径 —— 日志里绝不会出现
+    两个可以互相矛盾解读的"剩余"。它让"还剩多少条"成为可断言的数据，而不是只能从日志里 grep。
+
+    **仅在 `skipped=False` 时有意义**：本轮被跳过（拿不到运行锁）时根本没有产生计划，
+    `remaining` 保持 `0`，此时这个 `0` 表示"未计算"，**不是**"没有积压"。
+    """
 
     baseline: bool = False
     skipped: bool = False
     pushed: tuple[str, ...] = ()
     failed: tuple[str, ...] = ()
+    remaining: int = 0
 
 
 def default_deps() -> NoticeDeps:
@@ -261,7 +271,20 @@ async def _run_locked(
                 return RunResult(baseline=True)
             pushed: list[str] = []
             failed: list[str] = []
+            # 单次投递上限（0 = 不限制）。统计的是**成功投递**的条数：失败条目不计入名额，
+            # 否则一个持续失败的最新条目会每轮都占掉名额，把更旧的条目永远挤在后面（饥饿）。
+            limit = int(cfg.get("notice_max_per_run") or 0)
+            # 真实的"本轮因上限截断"标志：只在**循环因上限 break** 时置 True。
+            # 不能从 `len(pushed) >= limit` 反推：cap=2 且 3 条待推送、其中第 1 条失败时，
+            # 本轮 3 条会被全部处理完（上限没有推迟任何条目），反推却会误报"已达上限"。
+            # 判据写成 `limit > 0`：上限 0（缺省 = 不限制）**永不截断**，负数同样不截断
+            # （负数在生产路径已被 `check_config` 拒绝；这里只是让不变量显式，避免出现
+            # "本次投递 0 条（上限 -1）"这类自相矛盾的日志）。
+            truncated = False
             for row in plan.pending:
+                if limit > 0 and len(pushed) >= limit:
+                    truncated = True
+                    break
                 try:
                     await _push_one(
                         bot, cfg, row, kind, chats, pdf_dir=pdf_dir, dry_run=dry_run,
@@ -274,7 +297,21 @@ async def _run_locked(
                     failed.append(row.edit_id)
                     continue
                 pushed.append(row.edit_id)
-            return RunResult(pushed=tuple(pushed), failed=tuple(failed))
+            remaining = len(plan.pending) - len(pushed)
+            if truncated:
+                # 只有真的因上限截断（还有条目被推迟到下次）才报这一行。
+                log.info(
+                    "本次投递 %d 条（上限 %d），剩余 %d 条待下次定点",
+                    len(pushed), limit, remaining,
+                )
+            if failed:
+                # 失败条目也算在 `remaining` 里（下轮重试），故这里把口径写全，
+                # 免得读者把"剩余待投递"与上一行的"剩余"读成两倍的积压。
+                log.warning(
+                    "本次有 %d 条处理失败（下次定点重试）：%s；剩余待投递 %d 条（含本轮失败 %d 条）",
+                    len(failed), "、".join(failed), remaining, len(failed),
+                )
+            return RunResult(pushed=tuple(pushed), failed=tuple(failed), remaining=remaining)
         finally:
             if owned_session:
                 await active.close()
@@ -344,4 +381,9 @@ async def _push_one(
     if not schema.claim_and_mark(
         conn, kind, row.edit_id, now=now, pdf_path=str(pdf_path) if pdf_path else None
     ):
-        log.warning("通知 %s 已被其它运行记账，本轮不重复推送计数", row.edit_id)
+        # 抢占失败只可能因为该行已被别的运行置为非 NULL。无论干跑与否，调用方都仍把它计入
+        # "成功投递"（也就计入上限名额）—— 这与规格一致，不是重复计数。文案必须区分两种事实：
+        # 真实运行下本进程确实已经把消息发出去了；干跑下**没有发送**（只记了"[干跑] …将推送…"），
+        # 但仍照既有语义记账。下轮它不会再出现在 increment 里，不存在重发。
+        delivered = "本次为干跑（未发送）" if dry_run else "本进程已投递成功"
+        log.warning("通知 %s 已被其它运行记账；%s，仍按已推送计数", row.edit_id, delivered)

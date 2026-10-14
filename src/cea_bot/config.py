@@ -33,6 +33,9 @@ _DEFAULT_DEEPSEEK_MODEL = "deepseek-flash"
 # 正文/摘要的长度上限：规格要求"超过**可配置**长度上限时截断并注明"，故它可由
 # `notice_max_chars` 覆盖（可选键，未写进 config.example.yaml，用法见 README）。
 _DEFAULT_NOTICE_MAX_CHARS = 1500
+# 单次投递条数上限：缺省 0 = **不限制**。注意它与上面那个键的语义**相反** ——
+# `notice_max_chars` 必须为正整数（0 等于把正文截空，属静默失效），而这里 0 是明确合法的"不限制"。
+_DEFAULT_NOTICE_MAX_PER_RUN = 0
 _DEFAULT_NOTICE_TARGET_KIND = "group"
 _DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 # 裸会话号可用的会话类型（与 Chat.kind 的口径一致）
@@ -114,6 +117,7 @@ def _notice_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "notice_db_path": str(cfg.get("notice_db_path") or _DEFAULT_NOTICE_DB_PATH).strip(),
         "notice_pdf_dir": str(cfg.get("notice_pdf_dir") or _DEFAULT_NOTICE_PDF_DIR).strip(),
         "notice_max_chars": _notice_max_chars(cfg),
+        "notice_max_per_run": _notice_max_per_run(cfg),
         "notice_target_kind": _notice_target_kind(cfg),
         "deepseek_base_url": _deepseek_base_url(cfg),
         "deepseek_api_key": api_key,
@@ -164,6 +168,31 @@ def _notice_max_chars(cfg: dict[str, Any]) -> int:
         sys.exit(f"[配置错误] notice_max_chars 应为正整数（字符数），收到：{raw!r}")
     if value <= 0:
         sys.exit(f"[配置错误] notice_max_chars 应为正整数（字符数），收到：{raw!r}")
+    return value
+
+
+def _notice_max_per_run(cfg: dict[str, Any]) -> int:
+    """单次检查的**成功投递条数上限**（缺省 0 = 不限制）；须为非负整数。
+
+    与 `notice_max_chars` 的区别必须显式说明（两者对 0 的语义相反）：
+    这里 0 是"不限制"这一明确语义，不是静默失效；负数是没意义的取值，直接拒绝。
+    真正的"一条都不推"应通过清空 `notice_targets`（关闭该功能）实现，不靠这个键的边界值。
+    """
+    raw = cfg.get("notice_max_per_run")
+    if raw is None or str(raw).strip() == "":
+        return _DEFAULT_NOTICE_MAX_PER_RUN
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        sys.exit(
+            f"[配置错误] notice_max_per_run 应为非负整数（0 = 不限制），收到：{raw!r}；"
+            "若要「一条都不推」，请清空 notice_targets 关闭该功能"
+        )
+    if value < 0:
+        sys.exit(
+            f"[配置错误] notice_max_per_run 应为非负整数（0 = 不限制），收到：{raw!r}；"
+            "若要「一条都不推」，请清空 notice_targets 关闭该功能"
+        )
     return value
 
 

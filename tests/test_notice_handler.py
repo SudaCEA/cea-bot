@@ -65,8 +65,12 @@ def make_deps(
     usable: bool = True,
     pdf_error: Exception | None = None,
     detail_error: Exception | None = None,
+    detail_error_ids: frozenset[str] = frozenset(),
 ) -> tuple[handler.NoticeDeps, list[tuple[str, object]]]:
-    """构造注入依赖；`calls` 记录调用顺序，用于断言编排顺序。"""
+    """构造注入依赖；`calls` 记录调用顺序，用于断言编排顺序。
+
+    `detail_error_ids` 让**指定条目**的详情抓取失败（用于验证"失败条目不占投递名额"）。
+    """
     calls: list[tuple[str, object]] = []
 
     async def fetch_list(session: Any, kind: int, **kwargs: Any) -> RawPage:
@@ -75,6 +79,8 @@ def make_deps(
 
     async def fetch_detail(session: Any, edit_id: str, **kwargs: Any) -> RawPage:
         calls.append(("fetch_detail", edit_id))
+        if edit_id in detail_error_ids:
+            raise FetchError(f"详情抓取失败（测试构造）：{edit_id}")
         if detail_error is not None:
             raise detail_error
         return RawPage(url=f"http://file.suda.edu.cn/detail?editId={edit_id}", raw=detail_raw, declared_charset="utf-8")
@@ -537,7 +543,14 @@ def test_parse_targets_honours_default_kind():
 
 
 def test_no_silent_commit_when_losing_claim(tmp_path: Path):
-    """`claim_and_mark` 抢占失败时不得把该条算作"本轮已推"（并发语义在编排层的体现）。"""
+    """schema 层并发语义：抢占失败不**重复记账**，且该条立刻离开 `pending`（at-least-once 的基础）。
+
+    口径说明（避免误读成编排层语义）：编排层仍会把该条计入 `RunResult.pushed` —— 抢占失败
+    只可能因为该行已被别的运行置为非 NULL，而（真实运行下）本进程这条消息确实已经发出去了；
+    干跑不发送，但仍照既有语义记账。若把它排除在 `pushed` 之外，
+    `remaining = len(pending) - len(pushed)` 反而会把一个已推送的条目算成"仍待推送"
+    （见 design.md D6 的 remaining 口径）。
+    """
     cfg = cfg_for(tmp_path)
     conn = store.connect(cfg["notice_db_path"])
     try:
@@ -554,3 +567,225 @@ def _brief_one():
     from cea_bot.notices.models import NoticeBrief
 
     return NoticeBrief(kind=1, edit_id=NEW_ID, published_on="2026-10-14", title="t", dept="d")
+
+
+# ---- 单次投递上限（notice_max_per_run）----
+
+# 三条合成新增：id 与日期反向，故待推送顺序（发布时间降序）为 88000001 → 88000002 → 88000003
+EXTRA_ROWS = "".join(
+    '<TR style="FONT-WEIGHT: normal;">'
+    f'<td class="listTableLine222" align="center" nowrap>2026-10-{day}</td>'
+    f'<td class="listTableLine222"><a onclick="open_tz(\'{eid}\')" title="新增通知{eid}">新增通知{eid}</a></td>'
+    '<td class="listTableLine222" align="center">测试单位</td>'
+    "</TR>"
+    for eid, day in (("88000001", 14), ("88000002", 13), ("88000003", 12))
+)
+EXTRA_IDS = ("88000001", "88000002", "88000003")
+
+
+def _baseline(tmp_path: Path, **overrides: object) -> tuple[App, dict[str, Any]]:
+    """先跑一次建立基线（不推送），返回可复用的 app 与 cfg。"""
+    cfg = cfg_for(tmp_path, **overrides)
+    app = App(adapter=None)
+    deps, _ = make_deps()
+    assert asyncio.run(handler.run_once(app.bot, cfg, deps=deps)).baseline is True
+    _drain(app)
+    return app, cfg
+
+
+def test_max_per_run_limits_delivery_and_keeps_rest_pending(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    app, cfg = _baseline(tmp_path, notice_max_per_run=1)
+    deps, _ = make_deps(list_raw=LIST_RAW + EXTRA_ROWS.encode())
+    with caplog.at_level(logging.INFO, logger="cea"):
+        result = asyncio.run(handler.run_once(app.bot, cfg, deps=deps))
+    assert result.pushed == ("88000001",)  # 只推最新的一条
+    assert result.remaining == 2
+    assert result.failed == ()
+    assert len(_drain(app)) == 2  # 文本 + PDF，仅一条通知
+    rows = {row[0]: row[1] for row in _rows(cfg["notice_db_path"])}
+    assert rows["88000001"] is not None
+    assert rows["88000002"] is None and rows["88000003"] is None  # 未投递 → 仍待推送（不丢）
+    # 上限日志必须**三个数**都对得上（N / M / K）。只钉"上限"+"剩余 2 条"会放过"上限 99"。
+    assert "本次投递 1 条（上限 1），剩余 2 条待下次定点" in [
+        r.getMessage() for r in caplog.records
+    ]
+
+
+def test_remaining_items_are_delivered_on_following_runs(tmp_path: Path):
+    """超出上限的条目由后续检查继续投递（规格：「不丢失、不重复」）。"""
+    app, cfg = _baseline(tmp_path, notice_max_per_run=1)
+    doctored = LIST_RAW + EXTRA_ROWS.encode()
+    results = []
+    for _ in range(3):
+        deps, _ = make_deps(list_raw=doctored)
+        results.append(asyncio.run(handler.run_once(app.bot, cfg, deps=deps)))
+        _drain(app)
+    assert [r.pushed for r in results] == [("88000001",), ("88000002",), ("88000003",)]
+    assert [r.remaining for r in results] == [2, 1, 0]
+    rows = {row[0]: row[1] for row in _rows(cfg["notice_db_path"])}
+    assert all(rows[eid] is not None for eid in EXTRA_IDS)  # 三条都最终投递
+
+
+def test_max_per_run_zero_delivers_all(tmp_path: Path):
+    app, cfg = _baseline(tmp_path, notice_max_per_run=0)
+    deps, _ = make_deps(list_raw=LIST_RAW + EXTRA_ROWS.encode())
+    result = asyncio.run(handler.run_once(app.bot, cfg, deps=deps))
+    assert result.pushed == EXTRA_IDS
+    assert result.remaining == 0
+    assert len(_drain(app)) == 2 * len(EXTRA_IDS)
+
+
+def test_max_per_run_failure_does_not_consume_budget(tmp_path: Path):
+    """失败条目不计入上限名额：最新一条失败时，本轮仍会投递下一条（避免饥饿）。"""
+    app, cfg = _baseline(tmp_path, notice_max_per_run=1)
+    deps, _ = make_deps(
+        list_raw=LIST_RAW + EXTRA_ROWS.encode(), detail_error_ids=frozenset({"88000001"})
+    )
+    result = asyncio.run(handler.run_once(app.bot, cfg, deps=deps))
+    assert result.failed == ("88000001",)
+    assert result.pushed == ("88000002",)  # 名额没被失败的那条吃掉
+    assert result.remaining == 2  # 3 条待推送 − 1 条成功
+    rows = {row[0]: row for row in _rows(cfg["notice_db_path"])}
+    assert rows["88000001"][1] is None and "FetchError" in rows["88000001"][3]  # 未记账 + 留错误原因
+    assert rows["88000002"][1] is not None
+
+
+def test_dry_run_honours_max_per_run(tmp_path: Path):
+    """干跑套用同一上限与同一计划；否则它无法用来预演真实行为。"""
+    app = App(adapter=None)
+    cfg = cfg_for(tmp_path, notice_max_per_run=1, notice_dry_run=True)
+    deps, _ = make_deps()
+    asyncio.run(handler.run_once(app.bot, cfg, deps=deps))  # 基线（干跑下同样只建基线）
+    _drain(app)
+    deps2, _ = make_deps(list_raw=LIST_RAW + EXTRA_ROWS.encode())
+    result = asyncio.run(handler.run_once(app.bot, cfg, deps=deps2))
+    assert result.pushed == ("88000001",) and result.remaining == 2
+    assert _drain(app) == []  # 干跑不投递任何消息
+
+
+def test_max_per_run_above_pending_delivers_all(tmp_path: Path):
+    """2.1③ 缺口：上限**大于**待推送条数时必须全部投递、`remaining=0`、无失败。
+
+    既有的上限用例只覆盖 cap=0（不限制）与 cap=1（严格小于待推送数），
+    没有覆盖"非零上限 ≥ 待推送数"这条边界。
+    """
+    app, cfg = _baseline(tmp_path, notice_max_per_run=5)
+    deps, _ = make_deps(list_raw=LIST_RAW + EXTRA_ROWS.encode())
+    result = asyncio.run(handler.run_once(app.bot, cfg, deps=deps))
+    assert result.pushed == EXTRA_IDS  # 3 条全部投递
+    assert result.remaining == 0
+    assert result.failed == ()
+    assert len(_drain(app)) == 2 * len(EXTRA_IDS)
+
+
+def test_max_per_run_above_pending_logs_no_truncation(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    """上限没有推迟任何条目时**不得**打印上限日志（与下面 F1 假阳性同源）。"""
+    app, cfg = _baseline(tmp_path, notice_max_per_run=5)
+    deps, _ = make_deps(list_raw=LIST_RAW + EXTRA_ROWS.encode())
+    with caplog.at_level(logging.INFO, logger="cea"):
+        asyncio.run(handler.run_once(app.bot, cfg, deps=deps))
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("已达单次投递上限" in msg for msg in messages)
+    assert not any("本次投递" in msg and "上限" in msg for msg in messages)
+
+
+def test_max_per_run_not_truncated_when_all_processed_despite_failure(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    """F1 假阳性：`cap=2` + 3 条待推送 + 第 1 条（最新一条）失败 → 本轮 3 条**全部处理完**。
+
+    上限没有推迟任何条目（失败不占名额，后两条把名额用满后 `pending` 也已耗尽），
+    故不得出现任何"已达单次投递上限"/"本次投递…上限"的日志。
+    回归实现缺陷：原先用 `len(pushed) >= limit and remaining` 反推截断，这里会误报"已达上限 2"。
+    """
+    app, cfg = _baseline(tmp_path, notice_max_per_run=2)
+    deps, _ = make_deps(
+        list_raw=LIST_RAW + EXTRA_ROWS.encode(), detail_error_ids=frozenset({"88000001"})
+    )
+    with caplog.at_level(logging.INFO, logger="cea"):
+        result = asyncio.run(handler.run_once(app.bot, cfg, deps=deps))
+    assert result.failed == ("88000001",)
+    assert result.pushed == ("88000002", "88000003")  # 名额没被失败的那条吃掉，且 3 条都处理完了
+    assert result.remaining == 1  # 3 条待推送 − 2 条成功（失败那条仍待推送）
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("已达单次投递上限" in msg for msg in messages)
+    assert not any("本次投递" in msg and "上限" in msg for msg in messages)
+
+
+def test_failure_log_reports_ids_and_remaining_scope(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    """2.3② 缺口 + tasks 2.3 后半句：**未达上限但有失败条目**时也必须打印失败日志。
+
+    断言这一行同时交代失败条目 id 与"剩余"的口径（明确剩余里含本轮失败的那些条）。
+    """
+    app, cfg = _baseline(tmp_path)  # 不设上限（缺省 0 = 不限制）
+    deps, _ = make_deps(
+        list_raw=LIST_RAW + EXTRA_ROWS.encode(),
+        detail_error_ids=frozenset({"88000001", "88000002"}),
+    )
+    with caplog.at_level(logging.INFO, logger="cea"):
+        result = asyncio.run(handler.run_once(app.bot, cfg, deps=deps))
+    assert result.failed == ("88000001", "88000002") and result.pushed == ("88000003",)
+    assert result.remaining == 2  # 3 条待推送 − 1 条成功
+    messages = [r.getMessage() for r in caplog.records]
+    assert (
+        "本次有 2 条处理失败（下次定点重试）：88000001、88000002；"
+        "剩余待投递 2 条（含本轮失败 2 条）" in messages
+    )
+    # 没设上限 → 不存在上限日志，也就不存在第二个"剩余"数
+    assert not any("本次投递" in msg and "上限" in msg for msg in messages)
+
+
+def test_truncated_with_failure_reports_one_consistent_remaining(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    """F2：上限截断与失败同时发生时，两行日志报的"剩余"必须是**同一个数**（不是双倍）。"""
+    app, cfg = _baseline(tmp_path, notice_max_per_run=1)
+    deps, _ = make_deps(
+        list_raw=LIST_RAW + EXTRA_ROWS.encode(), detail_error_ids=frozenset({"88000001"})
+    )
+    with caplog.at_level(logging.INFO, logger="cea"):
+        result = asyncio.run(handler.run_once(app.bot, cfg, deps=deps))
+    assert result.failed == ("88000001",) and result.pushed == ("88000002",)
+    assert result.remaining == 2
+    messages = [r.getMessage() for r in caplog.records]
+    assert "本次投递 1 条（上限 1），剩余 2 条待下次定点" in messages
+    assert (
+        "本次有 1 条处理失败（下次定点重试）：88000001；"
+        "剩余待投递 2 条（含本轮失败 1 条）" in messages
+    )
+
+
+def test_failure_log_single_remaining_figure_for_two_failures(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    """F7.5 / F2：`cap=1` + 2 条失败 + 1 条成功时，失败日志点明"含本轮失败 2 条"。
+
+    该轮 `pending` 已被处理完（上限没有推迟任何条目），因此日志里**只有一个**"剩余"口径，
+    不会被读成"剩余 2 条 + 失败 2 条 = 积压 4 条"。
+    """
+    app, cfg = _baseline(tmp_path, notice_max_per_run=1)
+    deps, _ = make_deps(
+        list_raw=LIST_RAW + EXTRA_ROWS.encode(),
+        detail_error_ids=frozenset({"88000001", "88000002"}),
+    )
+    with caplog.at_level(logging.INFO, logger="cea"):
+        result = asyncio.run(handler.run_once(app.bot, cfg, deps=deps))
+    assert result.failed == ("88000001", "88000002") and result.pushed == ("88000003",)
+    assert result.remaining == 2
+    messages = [r.getMessage() for r in caplog.records]
+    # 只看汇总行（每条失败条目另有一行 ERROR「通知 X 处理失败，本次跳过…」，不算汇总）
+    failure_lines = [msg for msg in messages if msg.startswith("本次有")]
+    assert len(failure_lines) == 1
+    assert failure_lines[0].startswith(
+        "本次有 2 条处理失败（下次定点重试）：88000001、88000002；"
+        "剩余待投递 2 条（含本轮失败 2 条）"
+    )
+    assert "含本轮失败 2 条" in failure_lines[0]
+    remaining_lines = [msg for msg in messages if "剩余" in msg]
+    assert len(remaining_lines) == 1  # 只有一个"剩余"数，不存在互相矛盾的两个口径
