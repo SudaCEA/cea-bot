@@ -23,14 +23,20 @@
 - `parse_detail`：详情页 HTML → `NoticeDetail`（标题 / 文号 / 正文纯文本 / 附件清单）。
   文号与附件缺失**不是**错误（规格明文），标题与正文区域定位不到才是。
 
-只依赖标准库（`codecs` / `re` / `html.unescape`）：本变更唯一允许新增的依赖是 PDF 渲染（D2），
-`lxml` / `beautifulsoup4` / `chardet` 都不在依赖清单里，**禁止**引入 —— 本模块也不需要它们。
+只依赖标准库（`codecs` / `logging` / `re` / `html.unescape`）：本变更唯一允许新增的依赖是
+PDF 渲染（D2），`lxml` / `beautifulsoup4` / `chardet` 都不在依赖清单里，**禁止**引入 ——
+本模块也不需要它们。
 """
 import codecs
+import logging
 import re
 from html import unescape
 
 from .models import Attachment, NoticeBrief, NoticeDetail
+
+# 本模块的日志通道：与全仓库共用 `cea` logger（design.md D4）。解析层此前**没有** logger，
+# 于是"日期被静默改写"这类行为变化在日志里没有任何痕迹。这里只记**聚合条数**，不逐条刷屏。
+log = logging.getLogger("cea")
 
 # 回退候选（元组顺序即优先级）：先 UTF-8，再 GB18030。GB18030 是 GBK/GB2312 的超集且更宽松，
 # 故排在最后：候选越宽松，"解出来但是错的"概率越高，严格的先试。
@@ -194,9 +200,49 @@ _COMMENT = re.compile(r"<!--.*?-->", re.S)
 _ATTR_TITLE = re.compile(r"\btitle\s*=\s*\"([^\"]*)\"|\btitle\s*=\s*'([^']*)'", re.I)
 _ATTR_NAME = re.compile(r"\bname\s*=\s*\"([^\"]*)\"|\bname\s*=\s*'([^']*)'", re.I)
 _ATTR_VALUE = re.compile(r"\bvalue\s*=\s*\"([^\"]*)\"|\bvalue\s*=\s*'([^']*)'", re.I)
-_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_DATE = re.compile(r"\d{4}[-\uFF0D]\d{2}[-\uFF0D]\d{2}")
+# 发布日期的**接受集合**（design.md D1）：数字侧保持 `\d` —— 在 `str` 模式下它就是 Unicode `Nd` 类，
+# 于是全角 `０-９`、阿拉伯-印度数字、天城文数字一律接受；连字符接受 ASCII `-` 与全角 `－`(U+FF0D)。
+# 连字符必须与数字一起收：中文输入法全角状态下打出的日期是 `２０２６－１０－０１`（数字**与**连字符
+# 同时全角），只认半角连字符的话这个串根本不会被命中，等于没修。
+# **刻意不缩成 `[0-9０-９]`**：那会新增"页面出现其它 `Nd` 数字就判缺失"的拒绝分支，与归一化的目标相反；
+# **刻意不用 `unicodedata.normalize("NFKC", …)`**：它会把 `②` / `²` 这类非 `Nd` 字符也变成数字，
+# 等于悄悄放宽"什么算日期"。
+# 已知边界（**既有**缺陷，本次不修，已登记 `dev-docs/backlog.md` 第 4 条）：这里用 `search` 且
+# **没有左右边界**，`12345-67-89` 会在中间命中 `2345-67-89`。改边界会把本次变更从"日期口径"扩到
+# "日期识别规则"（design.md D3），故只在此注明。
+_DATE_SEP = re.compile(r"[-\uFF0D]")  # `_normalize_date` 的切分口径，与 `_DATE` 的连字符接受集同源
 _TAG = re.compile(r"<[^>]*>")
 _WS = re.compile(r"\s+")
+
+
+def _normalize_date(raw: str) -> str | None:
+    """把 `_DATE` 命中的日期串归一化成 ASCII `YYYY-MM-DD`；不构成日期时返回 `None`。
+
+    为什么用 `int()` 而不是手工查表：CPython 的 `int()` 认**全部** Unicode `Nd` 数字
+    （`int("٢٠٢٦") == 2026`），于是 `f"{…:04d}-{…:02d}-{…:02d}"` 一条路同时给出"数字归一化"
+    与"定宽补零"两个保证，连 `unicodedata` 都不必 import（design.md D2）。ASCII 输入经同一条
+    格式化路径得到与原串**逐字相同**的值（`_DATE` 本就只命中 4/2/2 位），故无需"ASCII 直接返回"分支。
+
+    返回 `None` 只有一个用途：让调用方按"发布日期缺失"处理。本函数**绝不抛错** —— 一条日期写法
+    异常不该让整轮解析中止（规格："SHALL NOT 因此中断本次运行"）。这条分支由单测显式喂非 `Nd`
+    命中触发，不靠"理论上不会发生"糊过去。
+
+    **这两个 `None` 分支（切不出 3 段 / `int()` 认不出）在当前接受集下不可达**：`\\d` 在 `str`
+    模式下恰为 Unicode `Nd` 类，而每个 `Nd` 字符都带十进制值（独立审查穷举 680 个 `Nd` 码点及
+    组合，设计方另行穷举复核，见 design.md D2 末条）。保留它们纯属**防御**：将来谁放宽 `_DATE`
+    （例如把字母也算进去）时，保证表现是"落成缺失"而不是抛异常中止整轮。单测用 monkeypatch
+    放宽 `_DATE` + spy 把这条路径变成**可达**再断言，钉住的正是这条防御契约，
+    **不等于**它今天会被走到。
+    """
+    parts = _DATE_SEP.split(raw)
+    if len(parts) != 3:
+        return None
+    try:
+        year, month, day = (int(part) for part in parts)
+    except ValueError:
+        return None
+    return f"{year:04d}-{month:02d}-{day:02d}"
 
 
 def parse_list(html: str, kind: int) -> list[NoticeBrief]:
@@ -211,9 +257,14 @@ def parse_list(html: str, kind: int) -> list[NoticeBrief]:
 
     0 条即 `NoticeParseError`：规格要求"解析结果为 0 条 SHALL 视为页面结构异常并中止本次运行"。
     这条判断比任何字段校验都重要 —— 缺了它，页面改版会被上层读成"没有新通知"，永远静默。
+
+    日期在**入口归一化一次**（design.md D2）：`published_on` 出本函数时已经是 ASCII `YYYY-MM-DD`，
+    排序 / PDF 命名 / 展示三处不必各自再修一遍。本页发生过几次归一化，就在末尾记**一条**聚合
+    WARNING（`列表页有 N/M 条日期被归一化为 ASCII`，`M` 为本页条目数），既不逐条刷屏、也不静默改写。
     """
     briefs: list[NoticeBrief] = []
     seen: set[str] = set()
+    normalized_dates = 0
     for match in _OPEN_TZ.finditer(html):
         edit_id = match.group(1).strip()
         # 同一标识只取一次：嵌套表格会让同一个锚点落在"内层行"与"外层行"两个片段里，
@@ -222,12 +273,24 @@ def parse_list(html: str, kind: int) -> list[NoticeBrief]:
             continue
         seen.add(edit_id)
         row = _row_around(html, match.start(), match.end())
-        briefs.append(_brief_of_row(row, kind, edit_id))
+        brief, normalized = _brief_of_row(row, kind, edit_id)
+        if normalized:
+            normalized_dates += 1
+        briefs.append(brief)
     if not briefs:
         raise NoticeParseError(
             "通知列表页解析失败：一个条目都没解析出来（期望页面里存在 "
             "onclick=\"…open_tz('<edit_id>')…\" 的数据行）。这视为页面结构改版，"
             "拒绝返回空列表 —— 空列表会被上层当成\"没有新通知\"而静默失效。"
+        )
+    if normalized_dates:
+        # 归一化必须留痕（规格："SHALL 记录日志"）：告警口径与编排层"缺少发布日期"的 `N/M 条`
+        # 一致（handlers/notice.py:259）—— 不逐条刷屏，也不静默改写。两条告警文案刻意用词不同，
+        # 可以同时出现、互不冒充（design.md D4 与 Risks）。
+        log.warning(
+            "列表页有 %d/%d 条日期被归一化为 ASCII（页面给出非 ASCII 数字或全角连字符）",
+            normalized_dates,
+            len(briefs),
         )
     return briefs
 
@@ -245,12 +308,16 @@ def _row_around(html: str, anchor_start: int, anchor_end: int) -> str:
     return html[start:end]
 
 
-def _brief_of_row(row: str, kind: int, edit_id: str) -> NoticeBrief:
-    """从一个 `<tr>` 片段里取日期 / 标题 / 发布单位。
+def _brief_of_row(row: str, kind: int, edit_id: str) -> tuple[NoticeBrief, bool]:
+    """从一个 `<tr>` 片段里取日期 / 标题 / 发布单位，返回 `(条目, 日期是否被归一化过)`。
 
     单元格按位置取值（实测行内恰好 3 个 `<td>`：日期 / 标题锚点 / 发布单位），
     标题单元格的位置由"哪个单元格含 `open_tz`"确定，不写死下标 —— 站点多插一列
     （例如加个"阅读数"）时，标题与发布单位仍能对上。
+
+    `normalized` 随返回值带出，而**不是**给 `NoticeBrief` 加字段：归一化是"解析步骤"的属性，
+    不是"一条通知"的属性，给领域模型加字段会让它变成"解析过程的副产物容器"（design.md D4）。
+    本函数与 `_normalize_date` 都是模块私有，公开签名 `parse_list(html, kind)` 不变。
     """
     cells = _TD.findall(row)
     title = ""
@@ -264,24 +331,34 @@ def _brief_of_row(row: str, kind: int, edit_id: str) -> NoticeBrief:
 
     title_cell = next((i for i, cell in enumerate(cells) if _OPEN_TZ.search(cell)), -1)
 
-    published_on = ""
+    raw_date = ""
     for cell in (cells[:title_cell] if title_cell >= 0 else []):
         hit = _DATE.search(_plain(cell))
         if hit is not None:
-            published_on = hit.group(0)
+            raw_date = hit.group(0)
             break
-    if not published_on:
+    if not raw_date:
         # 兜底：整行扫一次日期。抽不到就是空串（不是错误 —— 日期只用于排序与展示，
         # 真正的稳定标识是 edit_id；为它抛错会把"少一列"升级成"整个功能挂掉"）。
         hit = _DATE.search(_plain(row))
-        published_on = hit.group(0) if hit is not None else ""
+        raw_date = hit.group(0) if hit is not None else ""
+
+    # 归一化在**入口做一次**（design.md D2），产物即规范形式：从这一行起 `published_on` 就是 ASCII。
+    # 认不出来（非 `Nd` 命中）→ 空串，即"发布日期缺失"，**绝不因此抛错**（规格："SHALL NOT 因此
+    # 中断本次运行"）—— 一条日期写法异常不该让整轮解析中止。
+    normalized_date = _normalize_date(raw_date) if raw_date else None
+    published_on = normalized_date or ""
+    # "是否被归一化过"的判据是**值真的被改写**（页面本来就给 ASCII 规范形式的不算），
+    # 与告警文案"页面给出非 ASCII 数字或全角连字符"逐字对应。
+    was_normalized = normalized_date is not None and normalized_date != raw_date
 
     dept = ""
     if 0 <= title_cell + 1 < len(cells):
         dept = _plain(cells[title_cell + 1])
-    return NoticeBrief(
+    brief = NoticeBrief(
         kind=kind, edit_id=edit_id, published_on=published_on, title=title, dept=dept
     )
+    return brief, was_normalized
 
 
 def _attr(fragment: str, pattern: re.Pattern[str]) -> str:

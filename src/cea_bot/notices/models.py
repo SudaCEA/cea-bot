@@ -14,8 +14,9 @@
   用 int 而不是 str，是为了与 `check_config` 校验后的 `notice_type` 类型一致。
 - `edit_id`：详情页标识，取自列表页 `onclick="open_tz('<editId>')"` 里的**原始字符串**，
   此处刻意不做 int 转换：页面给的就是字符串，来回转换只会引入"前导零/超长数字"这类无谓风险。
-- `published_on`：发布日期，页面原文（实测为 `YYYY-MM-DD`）；此处不解析成 `date`，
-  以免把"页面格式变了"变成"解析直接抛错"（那是 3.3 的判断，不归数据模型管）。
+- `published_on`：发布日期，**归一化后的 ASCII `YYYY-MM-DD`**（页面给出非 ASCII 十进制数字或
+  全角连字符时，由解析层在入口归一化一次，见 `parse.py` 的 `_normalize_date` 与 design.md D2）；
+  此处不解析成 `date`，以免把"页面格式变了"变成"解析直接抛错"（那是 3.3 的判断，不归数据模型管）。
 - `url`：详情页 URL。列表页锚点没有 `href`（见 tests/fixtures/README.md），
   故该字段只能由业务层按 `edit_id` 拼出，这里只负责携带。
 - `attachments`：附件清单用 tuple 而不是 list —— 与 `frozen` 配套，

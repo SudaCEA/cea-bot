@@ -340,6 +340,80 @@ def test_missing_dates_are_reported_loudly(tmp_path: Path, caplog: pytest.LogCap
     assert any("缺少发布日期" in record.getMessage() for record in caplog.records)
 
 
+# ---- 2.1 归一化后的日期不影响"最近优先"（走真实投递路径） ----
+
+# 两条待推送记录：较早的全角日期 + 较新的 ASCII 日期。两者都早于 fixture 的 20 条基线，
+# 且相差 4 天 —— 只要较早那条因日期写法被排到队首，下面的投递序列就会立刻反过来。
+OLDER_ID = "77000001"
+LATER_ID = "77000002"
+LATER_PDF = "261005-较新的日期通知.pdf"
+
+
+def _notice_row(edit_id: str, published_on: str, title: str) -> str:
+    """按站点实测结构造一条列表行；`published_on` 传**页面原文**（全角写法原样放进去）。"""
+    return (
+        '<TR style="FONT-WEIGHT: normal;">'
+        f'<td class="listTableLine222" align="center" nowrap>{published_on}</td>'
+        f'<td class="listTableLine222"><a onclick="open_tz(\'{edit_id}\')" '
+        f'title="{title}">{title}</a></td>'
+        '<td class="listTableLine222" align="center">测试单位</td>'
+        "</TR>"
+    )
+
+
+@pytest.mark.parametrize(
+    "older_raw_date",
+    [
+        "２０２６－１０－０１",  # 中文输入法全角状态：数字与连字符**同时**全角（1.2 的形态）
+        "２０２６-１０-０１",  # 只有数字全角（proposal / backlog 里"排到队首"的旧缺陷形态）
+    ],
+    ids=["fullwidth-hyphen", "fullwidth-digits"],
+)
+def test_normalized_date_keeps_recency_order_pdf_name_and_missing_date_quiet(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, older_raw_date: str
+):
+    """任务 2.1 / 规格 Scenario「归一化后的日期不影响"最近优先"」：走**真实投递路径**验证。
+
+    为什么不直接比较两个日期字符串：被测行为是"编排层按 `published_on DESC` 投递"，
+    日期只在解析层被归一化一次；只有断言**总线里的投递序列**，才能证明它没被日期写法带偏。
+
+    两种全角形态都要跑，因为它们在**旧实现**里失败的方式不同：
+    - 数字与连字符同时全角：旧 `_DATE` 不认全角连字符 → 整条落成"缺少发布日期"
+      （排序恰好垫底，但 PDF 名回落 `000000-`、`missing_dates` 会告警）；
+    - 只有数字全角：旧 `_DATE` 把原串认下并原样落库 → 全角串在 TEXT 二进制比较里大于
+      ASCII，**排到队首**、抢在较新条目之前，PDF 名同样回落 `000000-`。
+    两种形态的断言一致：较新者在前、较早那条的 PDF 名用归一化后的日期、且不出现
+    "缺少发布日期"告警（后者同时是"解析层必然产出非空 ASCII 日期"的编排层回归）。
+    """
+    cfg = cfg_for(tmp_path)
+    app = App(adapter=None)
+    asyncio.run(handler.run_once(app.bot, cfg, deps=make_deps()[0]))  # 基线：fixture 的 20 条
+    _drain(app)
+
+    older_pdf = "261001-较早的全角日期通知.pdf"
+    page = (
+        LIST_RAW
+        + _notice_row(OLDER_ID, older_raw_date, "较早的全角日期通知").encode()
+        + _notice_row(LATER_ID, "2026-10-05", "较新的日期通知").encode()
+    )
+    deps, calls = make_deps(list_raw=page)
+    with caplog.at_level(logging.WARNING, logger="cea"):
+        caplog.clear()
+        result = asyncio.run(handler.run_once(app.bot, cfg, deps=deps))
+
+    # ① 投递序列：较新的 ASCII 条目在前（旧实现会把全角日期那条排到队首）。
+    assert result.pushed == (LATER_ID, OLDER_ID)
+    delivered = [msg.file_name for msg in _drain(app) if msg.file is not None]
+    assert delivered == [LATER_PDF, older_pdf]  # 断言总线里的真实顺序，不是函数返回值自证
+    # ② 假渲染器实际收到的 out_path：较早那条按归一化后的 `2026-10-01` 命名，不回落 `000000-`。
+    rendered = [payload for name, payload in calls if name == "render"]
+    assert rendered == [LATER_PDF, older_pdf]
+    assert not rendered[1].startswith("000000-")
+    # ③ 归一化后的条目**不进** `missing_dates`（旧实现会把"同时全角"那种形态计成缺日期并告警）。
+    missing = [r.getMessage() for r in caplog.records if "缺少发布日期" in r.getMessage()]
+    assert missing == []
+
+
 # ---- 8.1 摘要降级：正文原文照发 ----
 
 def test_summary_degradation_still_sends_body(tmp_path: Path):
