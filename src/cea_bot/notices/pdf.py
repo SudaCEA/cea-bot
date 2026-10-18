@@ -163,16 +163,35 @@ async def playwright_renderer(html: str, out_path: Path, *, is_windows: bool | N
     `is_windows` 只影响失败提示里的解释器路径（缺省 `None` = 读当前平台）；见
     `cea_bot.platform_hints`。多出的是一个**带缺省的仅关键字**参数，故仍然满足
     `Renderer` 契约（`Callable[[str, Path], Awaitable[None]]`）。
+
+    **导入失败与启动失败收敛到同一个 `PdfRenderError`（design D1）**：`playwright` 包不可用
+    （部分安装、`--no-deps`、venv 被破坏）时抛的是 `ModuleNotFoundError`，而调用方
+    `handlers/notice.py` 只捕 `(PdfRenderError, OSError)`；放任它以原类型冒出，规格要求的
+    "PDF 生成失败 → 只发文本 + 记告警"就会变成"整轮中止、连文本都没发"。
+
+    导入那一行的捕获面是 **`except Exception`**（design D1 审查后修订）：只捕 `ImportError` 时，
+    "包在、只是它的传递依赖（`pyee` / `greenlet`）缺失"这类导入期抛出的**其它**异常会冒穿同一条
+    降级路径 —— 而导入语句不存在"磁盘满 vs 依赖不可用"的歧义，导入期任何失败**就是**
+    "渲染依赖不可用"，按规格就该降级。
+    收敛面仍然**只到导入这一行**：下面那两个 `except Exception` 是为 `chromium.launch()` 与
+    渲染阶段写的，本次未动。
+    `asyncio.CancelledError` 继承 `BaseException`，故**三处捕获面都捕不到它**，它**继续冒穿**
+    （框架的优雅退出依赖它，见 `cea/adapters/base.py` 的契约）；任何一处都不得把捕获面放宽到
+    `BaseException`（那样取消会被吞成 `PdfRenderError`，表现为"Ctrl+C 后停不下来"）。
     """
-    from playwright.async_api import async_playwright
+    # 平台事实只解析一次，导入与启动两条提示共用（避免同一个值读两遍、写两处）。
+    windows = resolve_is_windows(is_windows)
+    try:
+        from playwright.async_api import async_playwright
+    except Exception as exc:
+        # 捕获面是 `Exception` 而非 `ImportError`：理由见 docstring（D1 审查后修订）。
+        raise PdfRenderError(playwright_missing_hint(exc, windows)) from exc
 
     async with async_playwright() as playwright:
         try:
             browser = await playwright.chromium.launch()
         except Exception as exc:
-            raise PdfRenderError(
-                browser_launch_hint(exc, resolve_is_windows(is_windows))
-            ) from exc
+            raise PdfRenderError(browser_launch_hint(exc, windows)) from exc
         try:
             page = await browser.new_page()
             await page.set_content(html, wait_until="load")
@@ -207,33 +226,18 @@ def playwright_install_hint(is_windows: bool) -> str:
     )
 
 
-def playwright_missing_hint(exc: ImportError, is_windows: bool) -> str:
-    """未安装 playwright 包时的**可执行**提示（纯函数，平台由参数注入）。"""
+def playwright_missing_hint(exc: Exception, is_windows: bool) -> str:
+    """**无法导入** playwright 时的**可执行**提示（纯函数，平台由参数注入）。
+
+    首行刻意写"无法导入"而不是"未安装"：`playwright` 包本身在、只是它的传递依赖
+    （`pyee` / `greenlet`）缺失时，异常同样出在**导入期** —— 旧文案在这种现场会产出
+    "未安装 playwright（No module named 'pyee'）"，**标签与括号里的真实异常自相矛盾**，
+    把排查引向"包没装"（实际是 venv 被 `--no-deps`、半途失败的安装或部分卸载破坏）。
+    括号里**原样**带出真实异常（含缺失的模块名）：排查线索不能丢。
+    """
     return (
-        f"未安装 playwright（{exc}）。安装命令：\n"
+        f"无法导入 playwright（{exc}）。安装命令：\n"
         f"  {venv_python(is_windows)} -m pip install -e \".[dev]\" "
         "--index-url https://pypi.org/simple\n"
         f"{playwright_install_hint(is_windows)}"
     )
-
-
-async def render_env_error(*, is_windows: bool | None = None) -> str | None:
-    """探测渲染环境：就绪返回 None，否则返回**可执行的**提示（不裸 traceback，任务 7.2）。
-
-    `is_windows` 只影响提示里的 venv 解释器路径（缺省 `None` = 读当前平台）：
-    两个分支都能被单测钉死，见 tests/test_notice_pdf.py。
-    """
-    windows = resolve_is_windows(is_windows)
-    install_hint = playwright_install_hint(windows)
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError as exc:
-        return playwright_missing_hint(exc, windows)
-    try:
-        async with async_playwright() as playwright:
-            executable = Path(playwright.chromium.executable_path)
-    except Exception as exc:
-        return f"无法初始化 Playwright（{type(exc).__name__}: {exc}）。{install_hint}"
-    if not executable.exists():
-        return f"Playwright 浏览器内核不存在：{executable}\n{install_hint}"
-    return None
