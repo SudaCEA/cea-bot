@@ -17,6 +17,12 @@ import sys
 
 import pytest
 
+# venv 解释器路径**就地**按平台判断：Windows 是 `.venv\Scripts\python`，POSIX 是 `.venv/bin/python`。
+# 这里**刻意不 import** `cea_bot.platform_hints`（任务 1.1 的纯函数）：本钩子的职责正是
+# "`cea`（乃至整个项目）尚未安装时的提示"，去 import 项目内的 helper 会在最需要它的场景下先崩掉
+# —— 提示本身成了新的报错，比不提示更糟。故只借标准库 `sys.platform` 写一行。
+_VENV_PYTHON = ".venv\\Scripts\\python" if sys.platform == "win32" else ".venv/bin/python"
+
 
 def pytest_configure(config: pytest.Config) -> None:
     """会话开始即确认框架包可导入；未安装则给指引并快速失败。"""
@@ -27,7 +33,7 @@ def pytest_configure(config: pytest.Config) -> None:
             raise
         _HINT = (
             "导入 cea 失败：项目尚未安装到当前解释器。\n"
-            '请先执行：.venv\\Scripts\\python -m pip install -e ".[dev]" '
+            f"请先执行：{_VENV_PYTHON} -m pip install -e \".[dev]\" "
             "--index-url https://pypi.org/simple"
         )
         # 自行输出提示：本钩子在部分路径下（conftest 于收集期才被加载）由

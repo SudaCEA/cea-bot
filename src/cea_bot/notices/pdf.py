@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cea_bot.notices.fetch import SITE_ROOT
+from cea_bot.platform_hints import resolve_is_windows, venv_python
 
 if TYPE_CHECKING:  # 只为类型标注：playwright 在运行期是延迟导入的（保持 import 廉价）
     from playwright.async_api import PdfMargins
@@ -144,8 +145,25 @@ async def render_pdf(
     return PdfResult(path=out_path, bytes_len=size)
 
 
-async def playwright_renderer(html: str, out_path: Path) -> None:
-    """默认渲染器：Playwright 无头 Chromium，A4 + 页边距 + 打印背景。"""
+def browser_launch_hint(exc: Exception, is_windows: bool) -> str:
+    """浏览器启动失败时的**可执行**提示（纯函数，平台由参数注入）。
+
+    只改提示文案，不改任何逻辑：启动失败最常见、也最可修的成因就是浏览器内核没装，
+    故指向 `install chromium`。命令统一用解释器模块形态，见 `playwright_install_hint`。
+    """
+    return (
+        f"Playwright 浏览器启动失败（{type(exc).__name__}: {exc}）。"
+        f"请先执行：{venv_python(is_windows)} -m playwright install chromium"
+    )
+
+
+async def playwright_renderer(html: str, out_path: Path, *, is_windows: bool | None = None) -> None:
+    """默认渲染器：Playwright 无头 Chromium，A4 + 页边距 + 打印背景。
+
+    `is_windows` 只影响失败提示里的解释器路径（缺省 `None` = 读当前平台）；见
+    `cea_bot.platform_hints`。多出的是一个**带缺省的仅关键字**参数，故仍然满足
+    `Renderer` 契约（`Callable[[str, Path], Awaitable[None]]`）。
+    """
     from playwright.async_api import async_playwright
 
     async with async_playwright() as playwright:
@@ -153,8 +171,7 @@ async def playwright_renderer(html: str, out_path: Path) -> None:
             browser = await playwright.chromium.launch()
         except Exception as exc:
             raise PdfRenderError(
-                f"Playwright 浏览器启动失败（{type(exc).__name__}: {exc}）。"
-                "请先执行：.venv\\Scripts\\playwright install chromium"
+                browser_launch_hint(exc, resolve_is_windows(is_windows))
             ) from exc
         try:
             page = await browser.new_page()
@@ -175,17 +192,43 @@ async def playwright_renderer(html: str, out_path: Path) -> None:
             await browser.close()
 
 
-async def render_env_error() -> str | None:
-    """探测渲染环境：就绪返回 None，否则返回**可执行的**提示（不裸 traceback，任务 7.2）。"""
-    install_hint = (
+def playwright_install_hint(is_windows: bool) -> str:
+    """Playwright 浏览器内核的安装提示（**纯函数**，平台由参数注入）。
+
+    统一写成 `<venv-python> -m playwright install chromium`：playwright 包内带
+    `__main__.py`（实测 `python -m playwright --version` → `Version 1.63.0`），故 Windows 的
+    `Scripts\\playwright.exe` 与 Linux 的 `bin/playwright` **共用同一条命令**，
+    不必分平台分叉 —— 需要分平台的只有解释器路径本身（见 `cea_bot.platform_hints`）。
+    """
+    return (
         "安装命令：\n"
-        "  .venv\\Scripts\\playwright install chromium\n"
+        f"  {venv_python(is_windows)} -m playwright install chromium\n"
         "（Playwright 的浏览器内核不入版本库；若下载慢，重试或先设好网络代理。）"
     )
+
+
+def playwright_missing_hint(exc: ImportError, is_windows: bool) -> str:
+    """未安装 playwright 包时的**可执行**提示（纯函数，平台由参数注入）。"""
+    return (
+        f"未安装 playwright（{exc}）。安装命令：\n"
+        f"  {venv_python(is_windows)} -m pip install -e \".[dev]\" "
+        "--index-url https://pypi.org/simple\n"
+        f"{playwright_install_hint(is_windows)}"
+    )
+
+
+async def render_env_error(*, is_windows: bool | None = None) -> str | None:
+    """探测渲染环境：就绪返回 None，否则返回**可执行的**提示（不裸 traceback，任务 7.2）。
+
+    `is_windows` 只影响提示里的 venv 解释器路径（缺省 `None` = 读当前平台）：
+    两个分支都能被单测钉死，见 tests/test_notice_pdf.py。
+    """
+    windows = resolve_is_windows(is_windows)
+    install_hint = playwright_install_hint(windows)
     try:
         from playwright.async_api import async_playwright
     except ImportError as exc:
-        return f"未安装 playwright（{exc}）。安装命令：\n  .venv\\Scripts\\python -m pip install -e \".[dev]\" --index-url https://pypi.org/simple\n{install_hint}"
+        return playwright_missing_hint(exc, windows)
     try:
         async with async_playwright() as playwright:
             executable = Path(playwright.chromium.executable_path)

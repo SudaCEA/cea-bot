@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """NapCat 前端单测：事件归一化 / 段构造 / 装配选择（均纯函数，不依赖真实 WS）。
 
-运行：.venv\\Scripts\\python -m pytest tests -q
+运行：.venv\\Scripts\\python -m pytest tests -q（POSIX：.venv/bin/python -m pytest tests -q）
 """
 import asyncio
 import base64 as b64mod
@@ -157,6 +157,25 @@ def test_check_config_napcat_branch():
 def test_check_config_napcat_requires_ws_url():
     with pytest.raises(SystemExit):
         check_config({"adapter": "napcat"})
+
+
+@pytest.mark.parametrize(
+    "is_windows, expected, wrong",
+    [(True, ".venv\\Scripts\\python", ".venv/bin/python"),
+     (False, ".venv/bin/python", ".venv\\Scripts\\python")],
+    ids=["windows", "posix"],
+)
+def test_credentials_hint_names_platform_python(is_windows: bool, expected: str, wrong: str):
+    """凭据缺失提示里的启动命令必须按平台给出解释器路径（两个分支各一条用例）。
+
+    这是 `src/` 里唯一一处**配置期**提示：它在 Ubuntu 上照抄 `.venv\\Scripts\\python`
+    只会得到 "No such file or directory"，故"含本平台路径"与"不含另一平台路径"都要断言。
+    """
+    with pytest.raises(SystemExit) as exc:
+        check_config({"appid": "YOUR_APPID", "secret": "s"}, is_windows=is_windows)
+    message = str(exc.value)
+    assert f"{expected} -m cea_bot" in message
+    assert wrong not in message
 
 
 def test_check_config_unknown_adapter_fails_fast():

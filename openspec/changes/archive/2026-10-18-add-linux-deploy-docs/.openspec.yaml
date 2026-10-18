@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-10-18
+# 本变更不改任何 SHALL 行为：只补 Linux 部署文档、加一个 start.sh、把写死 Windows 路径的
+# 提示文案改成按平台生成。故跳过规格同步（AGENTS.md：不得为通过校验而凭空造需求）。
+skip_specs: true

@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 
 from cea.app import parse_hhmm
+from cea_bot.platform_hints import resolve_is_windows, venv_python
 
 # 仓库根 = src/cea_bot/config.py 的 parents[2]（[0]=cea_bot, [1]=src, [2]=仓库根）。
 # 不能照抄 `parent`：那会指向 src/cea_bot/，让 load_config 去找
@@ -44,19 +45,23 @@ _CHAT_KINDS = ("group", "c2c", "channel")
 _NOTICE_TYPES = (1, 2, 3)
 
 
-def check_config(cfg: dict[str, Any]) -> dict[str, Any]:
+def check_config(cfg: dict[str, Any], *, is_windows: bool | None = None) -> dict[str, Any]:
     """校验配置（纯函数，供测试）；不合法直接退出并说明。
 
     先按 adapter 分支校验（既有口径，逐字未改），再合并通知推送的校验结果：
     `notice_targets` 为空 = 该功能关闭，此时**不追加任何 notice 字段**，
     返回值结构与本变更之前逐字一致。
+
+    `is_windows` 只为**提示文案**注入平台（缺省 `None` = 读当前平台）：提示里的 venv
+    解释器路径分平台（见 `cea_bot.platform_hints`），做成参数才能让两个分支都被单测覆盖。
+    它不改变任何校验结果，也不让本函数碰文件系统。
     """
-    validated = _check_platform(cfg)
+    validated = _check_platform(cfg, is_windows=is_windows)
     validated.update(_notice_config(cfg))
     return validated
 
 
-def _check_platform(cfg: dict[str, Any]) -> dict[str, Any]:
+def _check_platform(cfg: dict[str, Any], *, is_windows: bool | None = None) -> dict[str, Any]:
     """按 adapter 分支校验配置（纯函数，供测试）；不合法直接退出并说明。"""
     adapter = str(cfg.get("adapter") or "qqofficial").strip().lower()
     whitelist_raw = cfg.get("group_whitelist") or []
@@ -67,12 +72,7 @@ def _check_platform(cfg: dict[str, Any]) -> dict[str, Any]:
         appid = str(cfg.get("appid") or "").strip()
         secret = str(cfg.get("secret") or "").strip()
         if not appid or not secret or appid.startswith("YOUR_") or secret.startswith("YOUR_"):
-            sys.exit(
-                "[等待接入 apikey] adapter=qqofficial 需要机器人凭据：\n"
-                f"  1. 登录 QQ 机器人开放平台：{_QQ_SETTING_URL}\n"
-                "  2. 在「开发设置」页复制 AppID 与 AppSecret\n"
-                "  3. 填入 config.yaml 后重新运行：.venv\\Scripts\\python -m cea_bot"
-            )
+            sys.exit(_credentials_hint(resolve_is_windows(is_windows)))
         return {"adapter": adapter, "appid": appid, "secret": secret,
                 "group_whitelist": group_whitelist}
     if adapter == "napcat":
@@ -86,6 +86,20 @@ def _check_platform(cfg: dict[str, Any]) -> dict[str, Any]:
         return {"adapter": adapter, "ws_url": ws_url, "token": token,
                 "group_whitelist": group_whitelist}
     sys.exit(f"[配置错误] 未知 adapter: {adapter!r}，可选值：qqofficial / napcat")
+
+
+def _credentials_hint(is_windows: bool) -> str:
+    """`adapter: qqofficial` 凭据缺失时的**可执行**提示（纯函数，平台由参数注入）。
+
+    第 3 步的启动命令必须按平台给出（Windows 是 `Scripts\\` 下的解释器、POSIX 是 `bin/` 下的，
+    见 `cea_bot.platform_hints`）：提示里的路径写死任一种，另一种平台照抄都会失败。
+    """
+    return (
+        "[等待接入 apikey] adapter=qqofficial 需要机器人凭据：\n"
+        f"  1. 登录 QQ 机器人开放平台：{_QQ_SETTING_URL}\n"
+        "  2. 在「开发设置」页复制 AppID 与 AppSecret\n"
+        f"  3. 填入 config.yaml 后重新运行：{venv_python(is_windows)} -m cea_bot"
+    )
 
 
 def _notice_config(cfg: dict[str, Any]) -> dict[str, Any]:

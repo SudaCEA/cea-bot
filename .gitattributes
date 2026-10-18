@@ -1,0 +1,6 @@
+# 换行符**只锁 shell 脚本**：本机 core.autocrlf=true，没有这条规则时在 Windows 上 checkout
+# 会把 start.sh 变成 CRLF，而它被拷到 Ubuntu 后会直接 bad interpreter / $'\r' 报错 ——
+# 那是本变更交付物自身的部署风险，锁在这里比只在 README 里口头提醒可靠（README 8.7 的提醒保留作二次兜底）。
+# **刻意不写 `* text=auto eol=lf`**：那会波及 .bat，而 cmd.exe 对 LF-only 的 .bat 有已知的解析问题
+# （标签与 goto），start.bat 必须保持 CRLF 兼容。
+*.sh text eol=lf

@@ -5,6 +5,7 @@
 尤其是"静默产出空文件"这条失败形态。
 """
 import asyncio
+import sys
 from pathlib import Path
 
 import pytest
@@ -186,3 +187,68 @@ def test_render_env_error_is_actionable_or_ready():
     """本机已装浏览器时返回 None；未装时必须给出**可执行的**安装提示（不裸 traceback）。"""
     message = asyncio.run(pdf.render_env_error())
     assert message is None or "playwright install chromium" in message
+
+
+@pytest.mark.parametrize(
+    "is_windows, expected, wrong",
+    [(True, ".venv\\Scripts\\python", ".venv/bin/python"),
+     (False, ".venv/bin/python", ".venv\\Scripts\\python")],
+    ids=["windows", "posix"],
+)
+def test_playwright_install_hint_is_platform_correct(is_windows: bool, expected: str, wrong: str):
+    """安装提示按平台生成（两个分支各一条用例，任一本机都能跑）。
+
+    命令统一是 `-m playwright install chromium`（包内带 `__main__.py`），故 Windows 的
+    `Scripts\\playwright.exe` 与 Linux 的 `bin/playwright` 共用同一条命令 —— 分平台的只有
+    解释器路径。断言"含本平台路径"**且**"不含另一平台路径"，后者才是"写死 Windows"的回归网。
+    """
+    message = pdf.playwright_install_hint(is_windows)
+    assert f"{expected} -m playwright install chromium" in message
+    assert wrong not in message
+
+
+@pytest.mark.parametrize(
+    "is_windows, expected, wrong",
+    [(True, ".venv\\Scripts\\python", ".venv/bin/python"),
+     (False, ".venv/bin/python", ".venv\\Scripts\\python")],
+    ids=["windows", "posix"],
+)
+def test_playwright_missing_hint_is_platform_correct(is_windows: bool, expected: str, wrong: str):
+    """未安装 playwright 的提示：安装与 pip 两条命令都用本平台的解释器路径。"""
+    message = pdf.playwright_missing_hint(ImportError("No module named 'playwright'"), is_windows)
+    assert f"{expected} -m pip install -e" in message
+    assert f"{expected} -m playwright install chromium" in message
+    assert wrong not in message
+
+
+@pytest.mark.parametrize(
+    "is_windows, expected, wrong",
+    [(True, ".venv\\Scripts\\python", ".venv/bin/python"),
+     (False, ".venv/bin/python", ".venv\\Scripts\\python")],
+    ids=["windows", "posix"],
+)
+def test_browser_launch_hint_is_platform_correct(is_windows: bool, expected: str, wrong: str):
+    """浏览器启动失败提示：保留异常类型与消息，且给本平台可执行的补救命令。"""
+    message = pdf.browser_launch_hint(RuntimeError("Executable doesn't exist"), is_windows)
+    assert "RuntimeError" in message and "Executable doesn't exist" in message
+    assert f"{expected} -m playwright install chromium" in message
+    assert wrong not in message
+
+
+@pytest.mark.parametrize(
+    "is_windows, expected",
+    [(True, ".venv\\Scripts\\python"), (False, ".venv/bin/python")],
+    ids=["windows", "posix"],
+)
+def test_render_env_error_uses_injected_platform(is_windows: bool, expected: str, monkeypatch):
+    """探测入口必须把注入的平台**真的用上**（回归："参数接了没传"）。
+
+    `sys.modules["playwright.async_api"] = None` 让 `from playwright.async_api import ...`
+    抛 ImportError（CPython 对 None 条目的既定语义），于是不必卸载真实依赖就能钉住
+    "未安装 playwright"这一分支的文案 —— 也顺带证明该分支的提示确实走到了平台参数。
+    """
+    monkeypatch.setitem(sys.modules, "playwright.async_api", None)
+    message = asyncio.run(pdf.render_env_error(is_windows=is_windows))
+    assert message is not None
+    assert f"{expected} -m pip install -e" in message
+    assert f"{expected} -m playwright install chromium" in message

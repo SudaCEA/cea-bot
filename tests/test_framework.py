@@ -2,7 +2,7 @@
 """框架单测：命令匹配 / 出站互斥 / msg_seq / 时钟 / 异常隔离 / 优雅退出。
 
 不依赖平台 SDK 的行为；用 asyncio.run 包裹协程场景（无需 pytest-asyncio）。
-运行：.venv\\Scripts\\python -m pytest tests -q
+运行：.venv\\Scripts\\python -m pytest tests -q（POSIX：.venv/bin/python -m pytest tests -q）
 """
 import asyncio
 from datetime import datetime

@@ -1,5 +1,7 @@
 # CEA Bot 的项目元数据与工具配置（依赖、打包、类型检查的唯一真相源）。
-# 首次安装：.venv\Scripts\python -m pip install -e ".[dev]" --index-url https://pypi.org/simple
+# 首次安装（Windows：.venv\Scripts\python；Ubuntu/POSIX：.venv/bin/python）：
+#   <venv-python> -m pip install -e ".[dev]" --index-url https://pypi.org/simple
+# Ubuntu 部署的完整步骤（Python 3.13 门槛、系统依赖、CJK 字体）见 README 第 8 节。
 
 [build-system]
 # src-layout 的可安装性（pip install -e ".[dev]"）由此确立：setuptools 需要它才能构建/生成 .pth。
@@ -16,7 +18,7 @@ requires-python = ">=3.13"
 dependencies = [
     # QQ 官方机器人 SDK。
     # 注意：清华镜像暂缺此包，安装必须显式用官方源：
-    #   .venv\Scripts\python -m pip install -e ".[dev]" --index-url https://pypi.org/simple
+    #   <venv-python> -m pip install -e ".[dev]" --index-url https://pypi.org/simple
     "qq-botpy==1.2.1",
     # 以下两个是直接 import（src/cea/adapters/napcat.py、src/cea_bot/config.py），
     # 不再依赖 qq-botpy 的传递依赖碰巧带进来。
@@ -25,8 +27,10 @@ dependencies = [
     # 本变更（add-notice-digest）唯一新增的运行时依赖：只用于把通知正文渲染为 PDF
     # （Playwright 无头 Chromium 的 page.pdf()，见 D2）。抓取复用 aiohttp、解析与状态
     # 用标准库，不再引入其他依赖。
-    # 注意：pip 装完还需单独下载浏览器二进制（约 300MB，落在 %LOCALAPPDATA%\ms-playwright，不入库）：
-    #   .venv\Scripts\playwright install chromium
+    # 注意：pip 装完还需单独下载浏览器二进制（约 300MB，不入库）。统一用解释器模块形态
+    # （包内带 __main__.py），故 Windows 与 Linux 是同一条命令，只有解释器路径不同：
+    #   <venv-python> -m playwright install chromium
+    # Ubuntu 上还要先装 Chromium 的系统共享库：install --with-deps（见 README 8.4）。
     "playwright>=1.49",
 ]
 
